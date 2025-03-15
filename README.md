@@ -2,6 +2,8 @@
 
 这是一个用于ComfyUI的Google Gemini API集成节点，支持文本生成和图像生成功能。通过此节点，您可以在ComfyUI工作流中直接使用Google的Gemini 2.0系列模型。
 
+![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo.png?raw=true)
+
 ## 功能特点
 
 - 支持Gemini 2.0系列模型（gemini-2.0-flash, gemini-2.0-flash-exp, gemini-2.0-pro）
@@ -18,11 +20,12 @@
 2. 将此仓库克隆或下载到ComfyUI的`custom_nodes`目录中：
    ```
    cd ComfyUI/custom_nodes
-   git clone https://github.com/your-username/comfyui_gemini_flash.git
+   git clone https://github.com/tatookan/comfyui_ssl_gemini_EXP.git
    ```
 3. 安装依赖：
    ```
-   pip install -r comfyui_gemini_flash/requirements.txt
+   cd comfyui_ssl_gemini_EXP
+   pip install -r requirements.txt
    ```
 4. 重启ComfyUI
 
@@ -96,10 +99,6 @@
 - 如果遇到网络连接问题，请检查代理设置
 - 如果API请求失败，请检查API密钥是否有效
 - 如果依赖安装失败，请手动安装所需的依赖包
-
-## 许可证
-
-[在此添加许可证信息]
 
 ## 致谢
 
