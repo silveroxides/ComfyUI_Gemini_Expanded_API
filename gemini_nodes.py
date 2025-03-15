@@ -77,14 +77,13 @@ class SSL_GeminiTextPrompt:
                 "use_proxy": (["False", "True"], {"default": "False"}),
                 "proxy_host": ("STRING", {"default": "127.0.0.1"}),
                 "proxy_port": ("INT", {"default": 7890, "min": 1, "max": 65535}),
-                "use_seed": (["False", "True"], {"default": "False"}),
-                "seed_type": (["random", "fixed"], {"default": "random"}),
-                "seed_value": ("INT", {"default": 66666, "min": 0, "max": 2147483647}),
+                "use_seed": (["True", "False"], {"default": "True"}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
             }
         }
     
-    RETURN_TYPES = ("STRING", "IMAGE")
-    RETURN_NAMES = ("text", "image")
+    RETURN_TYPES = ("STRING", "IMAGE", "INT")
+    RETURN_NAMES = ("text", "image", "seed")
     FUNCTION = "generate"
     CATEGORY = "💠SSL/API/Gemini"
     
@@ -113,7 +112,7 @@ class SSL_GeminiTextPrompt:
     
     def generate(self, config, prompt, model, temperature, top_p, top_k, max_output_tokens, include_images, 
                 input_image=None, use_proxy="False", proxy_host="127.0.0.1", proxy_port=7890,
-                use_seed="False", seed_type="random", seed_value=42):
+                use_seed="True", seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
@@ -121,12 +120,21 @@ class SSL_GeminiTextPrompt:
         
         print(f"[INFO] 开始生成，模型: {model}, 温度: {temperature}")
         
+        # 改进的随机种子处理逻辑
         if use_seed == "True":
-            if seed_type == "random":
-                actual_seed = random.randint(0, 2147483647)
+            # 如果种子为0，生成随机种子
+            if seed == 0:
+                # 使用当前时间戳和随机数组合生成种子，确保每次运行都不同
+                current_time = int(time.time() * 1000)
+                random_component = random.randint(0, 1000000)
+                actual_seed = (current_time + random_component) % 2147483647
+                print(f"[INFO] 生成随机种子: {actual_seed}")
             else:
-                actual_seed = seed_value
-                
+                # 使用指定的种子值
+                actual_seed = seed
+                print(f"[INFO] 使用指定种子: {actual_seed}")
+            
+            # 设置随机种子
             random.seed(actual_seed)
             np.random.seed(actual_seed)
             torch.manual_seed(actual_seed)
@@ -134,6 +142,7 @@ class SSL_GeminiTextPrompt:
                 torch.cuda.manual_seed_all(actual_seed)
         else:
             actual_seed = None
+            print("[INFO] 未使用种子")
         
         try:
             if use_proxy == "True":
@@ -197,7 +206,7 @@ class SSL_GeminiTextPrompt:
                 print(f"[INFO] Gemini客户端初始化成功")
             except Exception as e:
                 print(f"[ERROR] Gemini客户端初始化失败: {str(e)}")
-                return (f"Gemini客户端初始化失败: {str(e)}", self.generate_empty_image())
+                return (f"Gemini客户端初始化失败: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             
             try:
                 import socket
@@ -255,7 +264,7 @@ class SSL_GeminiTextPrompt:
                     contents = [img_part, txt_part]
                 except Exception as e:
                     print(f"[ERROR] 处理输入图像时出错: {str(e)}")
-                    return (f"处理输入图像时出错: {str(e)}", self.generate_empty_image())
+                    return (f"处理输入图像时出错: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             else:
                 contents = prompt
             
@@ -316,7 +325,7 @@ class SSL_GeminiTextPrompt:
                         error_str = str(result).lower()
                         if any(term in error_str for term in ["timeout", "connection", "network", "socket", "连接", "网络"]):
                             if not network_ok and use_proxy != "True":
-                                return (f"API请求失败: {str(result)}。网络连接测试失败，建议启用代理。", self.generate_empty_image())
+                                return (f"API请求失败: {str(result)}。网络连接测试失败，建议启用代理。", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
                         raise result
                 except queue.Empty:
                     elapsed_time = time.time() - start_time
@@ -331,7 +340,7 @@ class SSL_GeminiTextPrompt:
                     else:
                         timeout_msg += "网络连接测试成功，但API请求仍然超时，可能是服务器繁忙或请求内容过大。"
                     
-                    return (timeout_msg, self.generate_empty_image())
+                    return (timeout_msg, self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
                 
                 print(f"[INFO] 收到API响应")
                 
@@ -369,7 +378,7 @@ class SSL_GeminiTextPrompt:
                 seed_info = f"\n\n[种子信息: {actual_seed}]"
                 text_output += seed_info
                 
-            return (text_output, image_tensor)
+            return (text_output, image_tensor, actual_seed if actual_seed is not None else 0)
         finally:
             if original_http_proxy:
                 os.environ['HTTP_PROXY'] = original_http_proxy
