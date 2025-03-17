@@ -1,0 +1,15 @@
+[project]
+name = "ssl_gemini_exp"
+description = "Calling gemini2.0 at comfyui . The project will continue to organize good APIs!"
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["google-genai", "numpy", "torch"]
+
+[project.urls]
+Repository = "https://github.com/tatookan/comfyui_ssl_gemini_EXP"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "comfyui_ssl_gemini_EXP"
+Icon = ""
