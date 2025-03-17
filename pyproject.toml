@@ -10,6 +10,6 @@ Repository = "https://github.com/tatookan/comfyui_ssl_gemini_EXP"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "tatookan"
 DisplayName = "comfyui_ssl_gemini_EXP"
 Icon = ""
