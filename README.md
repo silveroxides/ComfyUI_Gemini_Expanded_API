@@ -1,6 +1,7 @@
 # ComfyUI Gemini Flash 节点
 
 这是一个用于ComfyUI的Google Gemini API集成节点，支持文本生成和图像生成功能。通过此节点，您可以在ComfyUI工作流中直接使用Google的Gemini 2.0系列模型。
+特别说明：关于出现[ERROR]API调用错误:'NoneType'object has no attribute'parts  说明你上传的图片或者提示词已经违反了《Generative AI Prohibited Use Policy》，请先使用场景或者产品图测试。
 
 ![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo.png?raw=true)
 ---
@@ -92,6 +93,11 @@
 - `image`: 如果启用了图像生成，则输出图像
 
 ## 注意事项
+-根据谷歌的《Generative AI Prohibited Use Policy》，Gemini API 有以下限制：
+-不得用于生成违反法律法规的内容
+-不得用于生成有害、欺诈、色情或暴力内容
+-不得用于生成侵犯他人隐私或知识产权的内容
+-图像生成可能受到额外限制，某些类型的图像可能无法生成
 
 - 使用此节点需要稳定的网络连接或有效的代理设置
 - API请求可能会受到Google服务器负载的影响
