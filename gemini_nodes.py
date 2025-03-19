@@ -74,6 +74,7 @@ class SSL_GeminiTextPrompt:
             },
             "optional": {
                 "input_image": ("IMAGE",),
+                "input_image_2": ("IMAGE",),  # 添加第二个图像输入
                 "use_proxy": (["False", "True"], {"default": "False"}),
                 "proxy_host": ("STRING", {"default": "127.0.0.1"}),
                 "proxy_port": ("INT", {"default": 7890, "min": 1, "max": 65535}),
@@ -111,7 +112,7 @@ class SSL_GeminiTextPrompt:
         return tensor
     
     def generate(self, config, prompt, model, temperature, top_p, top_k, max_output_tokens, include_images, 
-                input_image=None, use_proxy="False", proxy_host="127.0.0.1", proxy_port=7890,
+                input_image=None, input_image_2=None, use_proxy="False", proxy_host="127.0.0.1", proxy_port=7890,
                 use_seed="True", seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
@@ -248,20 +249,32 @@ class SSL_GeminiTextPrompt:
             
             contents = []
             
+            # 处理输入图像
+            images_to_process = []
             if input_image is not None:
+                images_to_process.append(input_image)
+            if input_image_2 is not None:
+                images_to_process.append(input_image_2)
+                
+            # 如果有图像需要处理
+            if images_to_process:
                 try:
-                    img_array = input_image[0].cpu().numpy()
-                    img_array = (img_array * 255).astype(np.uint8)
-                    pil_img = Image.fromarray(img_array)
+                    img_parts = []
                     
-                    img_byte_arr = io.BytesIO()
-                    pil_img.save(img_byte_arr, format='PNG')
-                    img_bytes = img_byte_arr.getvalue()
+                    for img in images_to_process:
+                        img_array = img[0].cpu().numpy()
+                        img_array = (img_array * 255).astype(np.uint8)
+                        pil_img = Image.fromarray(img_array)
+                        
+                        img_byte_arr = io.BytesIO()
+                        pil_img.save(img_byte_arr, format='PNG')
+                        img_bytes = img_byte_arr.getvalue()
+                        
+                        img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
+                        img_parts.append(img_part)
                     
-                    img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
-                    txt_part = {"text": prompt}
-                    
-                    contents = [img_part, txt_part]
+                    # 添加所有图像部分和文本部分
+                    contents = img_parts + [{"text": prompt}]
                 except Exception as e:
                     print(f"[ERROR] 处理输入图像时出错: {str(e)}")
                     return (f"处理输入图像时出错: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
