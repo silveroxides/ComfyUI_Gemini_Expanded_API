@@ -3,7 +3,11 @@
 这是一个用于ComfyUI的Google Gemini API集成节点，支持文本生成和图像生成功能。通过此节点，您可以在ComfyUI工作流中直接使用Google的Gemini 2.0系列模型。
 
 ![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo.png?raw=true)
+---
+![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo2.png?raw=true)
 
+## 更新
+2025.3.19：更新支持多图处理功能
 ## 功能特点
 
 - 支持Gemini 2.0系列模型（gemini-2.0-flash, gemini-2.0-flash-exp, gemini-2.0-pro）
