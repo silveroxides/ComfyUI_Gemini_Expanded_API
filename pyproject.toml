@@ -1,7 +1,7 @@
 [project]
 name = "ssl_gemini_exp"
 description = "Calling gemini2.0 at comfyui . The project will continue to organize good APIs!"
-version = "1.0.1"
+version = "1.0.2"
 license = {file = "LICENSE"}
 dependencies = ["google-genai", "numpy", "torch"]
 
