@@ -1,12 +1,12 @@
 [project]
 name = "ComfyUI_Gemini_Expanded_API"
 description = "Node for usage of Gemini API"
-version = "1.0.2"
+version = "1.0.0"
 license = {file = "LICENSE"}
 dependencies = ["google-genai", "numpy", "torch"]
 
 [project.urls]
-Repository = "https://github.com/silveroxides/comfyui_ssl_gemini_EXP"
+Repository = "https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
