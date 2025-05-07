@@ -65,7 +65,8 @@ class SSL_GeminiTextPrompt:
             "required": {
                 "config": ("GEMINI_CONFIG",),
                 "prompt": ("STRING", {"multiline": True}),
-                "model": (["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.0-pro"], {"default": "gemini-2.0-flash"}),
+                "system_instruction": ("STRING", {"default": "You are a helpful AI assistant.", "multiline": True}),
+                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-pro-exp-02-05"], {"default": "gemini-2.0-flash"}),
                 "temperature": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": ("INT", {"default": 40, "min": 1, "max": 100, "step": 1}),
@@ -111,7 +112,7 @@ class SSL_GeminiTextPrompt:
         tensor = torch.from_numpy(empty_image).unsqueeze(0)
         return tensor
     
-    def generate(self, config, prompt, model, temperature, top_p, top_k, max_output_tokens, include_images, 
+    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images, 
                 input_image=None, input_image_2=None, use_proxy="False", proxy_host="127.0.0.1", proxy_port=7890,
                 use_seed="True", seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
@@ -290,7 +291,28 @@ class SSL_GeminiTextPrompt:
                 top_p=top_p,
                 top_k=top_k,
                 max_output_tokens=max_output_tokens,
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE",  # Block none
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE",  # Block none
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE",  # Block none
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE",  # Block none
+                    ),
+                ],
                 response_modalities=response_modalities,
+                system_instruction=[
+                    types.Part.from_text(text=system_instruction),
+                ],
             )
             
             if use_seed == "True" and actual_seed is not None:
@@ -387,9 +409,9 @@ class SSL_GeminiTextPrompt:
             if image_tensor is None:
                 image_tensor = self.generate_empty_image()
                 
-            if use_seed == "True" and actual_seed is not None:
-                seed_info = f"\n\n[种子信息: {actual_seed}]"
-                text_output += seed_info
+            # if use_seed == "True" and actual_seed is not None:
+            #     seed_info = f"\n\n[种子信息: {actual_seed}]"
+            #     text_output += seed_info
                 
             return (text_output, image_tensor, actual_seed if actual_seed is not None else 0)
         finally:
