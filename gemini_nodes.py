@@ -457,6 +457,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "SSL_GeminiAPIKeyConfig": "💠SSL Gemini API Key",
-    "SSL_GeminiTextPrompt": "💠SSL Gemini Text Prompt",
+    "SSL_GeminiAPIKeyConfig": "Configure Gemini API Key",
+    "SSL_GeminiTextPrompt": "Expanded Gemini Text/Image",
 }
