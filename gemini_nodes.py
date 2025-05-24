@@ -27,17 +27,17 @@ def check_and_install_dependencies():
         try:
             importlib.import_module(module_name)
         except ImportError:
-            print(f"[WARNING] 未找到 {package_name}，尝试安装...")
+            print(f"[WARNING] {package_name} not found, trying to install...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-                print(f"[INFO] 成功安装 {package_name}")
+                print(f"[INFO] Successfully installed {package_name}")
             except Exception as e:
-                print(f"[ERROR] 安装 {package_name} 失败: {str(e)}")
+                print(f"[ERROR] Failed to install {package_name}: {str(e)}")
 
 try:
     check_and_install_dependencies()
 except Exception as e:
-    print(f"[WARNING] 检查依赖时出错: {str(e)}")
+    print(f"[WARNING] Error checking dependencies: {str(e)}")
 
 class SSL_GeminiAPIKeyConfig:
     @classmethod
@@ -75,7 +75,7 @@ class SSL_GeminiTextPrompt:
             },
             "optional": {
                 "input_image": ("IMAGE",),
-                "input_image_2": ("IMAGE",),  # 添加第二个图像输入
+                "input_image_2": ("IMAGE",),  # Add second image input
                 "use_proxy": (["False", "True"], {"default": "False"}),
                 "proxy_host": ("STRING", {"default": "127.0.0.1"}),
                 "proxy_port": ("INT", {"default": 7890, "min": 1, "max": 65535}),
@@ -120,23 +120,23 @@ class SSL_GeminiTextPrompt:
         original_http_proxy_lower = os.environ.get('http_proxy')
         original_https_proxy_lower = os.environ.get('https_proxy')
         
-        print(f"[INFO] 开始生成，模型: {model}, 温度: {temperature}")
+        print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
         
-        # 改进的随机种子处理逻辑
+        # Improved random seed handling logic
         if use_seed == "True":
-            # 如果种子为0，生成随机种子
+            # If seed is 0, generate a random seed
             if seed == 0:
-                # 使用当前时间戳和随机数组合生成种子，确保每次运行都不同
+                # Use current timestamp and random number combination to generate seed, ensuring it's different each run
                 current_time = int(time.time() * 1000)
                 random_component = random.randint(0, 1000000)
                 actual_seed = (current_time + random_component) % 2147483647
-                print(f"[INFO] 生成随机种子: {actual_seed}")
+                print(f"[INFO] Generated random seed: {actual_seed}")
             else:
-                # 使用指定的种子值
+                # Use the specified seed value
                 actual_seed = seed
-                print(f"[INFO] 使用指定种子: {actual_seed}")
+                print(f"[INFO] Using specified seed: {actual_seed}")
             
-            # 设置随机种子
+            # Set random seed
             random.seed(actual_seed)
             np.random.seed(actual_seed)
             torch.manual_seed(actual_seed)
@@ -144,7 +144,7 @@ class SSL_GeminiTextPrompt:
                 torch.cuda.manual_seed_all(actual_seed)
         else:
             actual_seed = None
-            print("[INFO] 未使用种子")
+            print("[INFO] Seed not used")
         
         try:
             if use_proxy == "True":
@@ -159,9 +159,9 @@ class SSL_GeminiTextPrompt:
                 os.environ['https_proxy'] = proxy_url
                 os.environ['REQUESTS_CA_BUNDLE'] = ''
                 
-                print(f"[INFO] 已启用代理: {proxy_url}")
+                print(f"[INFO] Proxy enabled: {proxy_url}")
             
-            print(f"[INFO] 初始化Gemini客户端")
+            print(f"[INFO] Initializing Gemini client")
             try:
                 client_options = {}
                 
@@ -198,17 +198,17 @@ class SSL_GeminiTextPrompt:
                             http_client = google.api_core.http_client.RequestsHttpClient(session=session)
                             client_options["http_client"] = http_client
                             
-                            print(f"[INFO] 已使用requests库设置代理到HTTP客户端")
+                            print(f"[INFO] Used requests library to set proxy for HTTP client")
                         except Exception as proxy_error:
-                            print(f"[WARNING] 设置HTTP客户端代理失败: {str(proxy_error)}")
+                            print(f"[WARNING] Failed to set HTTP client proxy: {str(proxy_error)}")
                     except ImportError as e:
-                        print(f"[WARNING] 导入Google API HTTP客户端库失败: {str(e)}")
+                        print(f"[WARNING] Failed to import Google API HTTP client library: {str(e)}")
                 
                 client = genai.Client(api_key=config["api_key"], **client_options)
-                print(f"[INFO] Gemini客户端初始化成功")
+                print(f"[INFO] Gemini client initialized successfully")
             except Exception as e:
-                print(f"[ERROR] Gemini客户端初始化失败: {str(e)}")
-                return (f"Gemini客户端初始化失败: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                print(f"[ERROR] Gemini client initialization failed: {str(e)}")
+                return (f"Gemini client initialization failed: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             
             try:
                 import socket
@@ -224,14 +224,14 @@ class SSL_GeminiTextPrompt:
                         test_socket.set_proxy(socks.HTTP, proxy_host, proxy_port)
                         test_socket.settimeout(5)
                     except ImportError:
-                        print(f"[WARNING] 未安装PySocks库，无法通过代理测试连接")
+                        print(f"[WARNING] PySocks library not installed, cannot test connection via proxy")
                 
                 test_socket.connect((test_host, 443))
                 test_socket.close()
                 network_ok = True
             except Exception as e:
                 network_ok = False
-                print(f"[WARNING] 网络连接测试失败: {str(e)}")
+                print(f"[WARNING] Network connection test failed: {str(e)}")
                 
                 if use_proxy == "True":
                     try:
@@ -242,9 +242,9 @@ class SSL_GeminiTextPrompt:
                             if result.returncode == 0 and result.stdout.strip() in ['200', '301', '302']:
                                 network_ok = True
                             else:
-                                print(f"[WARNING] curl代理测试失败，状态码: {result.stdout.strip() if result.stdout else 'N/A'}")
+                                print(f"[WARNING] curl proxy test failed, status code: {result.stdout.strip() if result.stdout else 'N/A'}")
                         except Exception as curl_error:
-                            print(f"[WARNING] curl测试失败: {str(curl_error)}")
+                            print(f"[WARNING] curl test failed: {str(curl_error)}")
                     except ImportError:
                         pass
             
@@ -274,11 +274,11 @@ class SSL_GeminiTextPrompt:
                         img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
                         img_parts.append(img_part)
                     
-                    # 添加所有图像部分和文本部分
+                    # Add all image parts and text parts
                     contents = img_parts + [{"text": prompt}]
                 except Exception as e:
-                    print(f"[ERROR] 处理输入图像时出错: {str(e)}")
-                    return (f"处理输入图像时出错: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                    print(f"[ERROR] Error processing input image: {str(e)}")
+                    return (f"Error processing input image: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             else:
                 contents = prompt
             
@@ -319,28 +319,36 @@ class SSL_GeminiTextPrompt:
                 try:
                     generate_content_config.seed = actual_seed
                 except Exception as seed_error:
-                    print(f"[WARNING] 无法设置种子到API请求: {str(seed_error)}")
+                    print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
             
             text_output = ""
             image_tensor = None
             
             try:
-                print(f"[INFO] 发送API请求到Gemini")
+                print(f"[INFO] Sending API request to Gemini")
                 
                 start_time = time.time()
                 timeout = 30
                 
                 def api_call():
-                    try:
-                        api_response = client.models.generate_content(
-                            model=model,
-                            contents=contents,
-                            config=generate_content_config,
-                        )
-                        result_queue.put(("success", api_response))
-                    except Exception as e:
-                        print(f"[ERROR] API线程中出错: {str(e)}")
-                        result_queue.put(("error", e))
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            api_response = client.models.generate_content(
+                                model=model,
+                                contents=contents,
+                                config=generate_content_config,
+                            )
+                            result_queue.put(("success", api_response))
+                            return  # Success, exit the function
+                        except Exception as e:
+                            print(f"[ERROR] API call attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                            if attempt < max_retries - 1:
+                                time.sleep(1)  # Wait 1 second before retrying
+                            else:
+                                print(f"[ERROR] All {max_retries} API call attempts failed.")
+                                result_queue.put(("error", e))
+                                return # All retries failed
 
                 result_queue = queue.Queue()
                 
@@ -354,30 +362,30 @@ class SSL_GeminiTextPrompt:
                     
                     if status == "success":
                         response = result
-                        print(f"[INFO] API请求成功完成，耗时: {elapsed_time:.2f}秒")
+                        print(f"[INFO] API request successfully completed in {elapsed_time:.2f} seconds")
                     else:
-                        print(f"[ERROR] API请求线程中出错，耗时: {elapsed_time:.2f}秒，错误: {str(result)}")
+                        print(f"[ERROR] Error in API request thread, time taken: {elapsed_time:.2f} seconds, error: {str(result)}")
                         error_str = str(result).lower()
                         if any(term in error_str for term in ["timeout", "connection", "network", "socket", "连接", "网络"]):
                             if not network_ok and use_proxy != "True":
-                                return (f"API请求失败: {str(result)}。网络连接测试失败，建议启用代理。", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                                return (f"API request failed: {str(result)}. Network connection test failed, consider enabling proxy.", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
                         raise result
                 except queue.Empty:
                     elapsed_time = time.time() - start_time
-                    print(f"[ERROR] API请求超时，已等待: {elapsed_time:.2f}秒")
+                    print(f"[ERROR] API request timed out, waited: {elapsed_time:.2f} seconds")
                     
-                    timeout_msg = f"Gemini API请求超时，已等待{timeout}秒。"
+                    timeout_msg = f"Gemini API request timed out, waited {timeout} seconds."
                     if not network_ok:
                         if use_proxy == "True":
-                            timeout_msg += f"网络连接测试失败，当前使用的代理({proxy_host}:{proxy_port})可能无效，请检查代理设置。"
+                            timeout_msg += f"Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
                         else:
-                            timeout_msg += "网络连接测试失败，建议启用代理。"
+                            timeout_msg += "Network connection test failed, consider enabling proxy."
                     else:
-                        timeout_msg += "网络连接测试成功，但API请求仍然超时，可能是服务器繁忙或请求内容过大。"
+                        timeout_msg += "Network connection test successful, but API request still timed out. This could be due to a busy server or a large request."
                     
                     return (timeout_msg, self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
                 
-                print(f"[INFO] 收到API响应")
+                print(f"[INFO] Received API response")
                 
                 if hasattr(response, 'candidates') and response.candidates:
                     for part in response.candidates[0].content.parts:
@@ -400,17 +408,17 @@ class SSL_GeminiTextPrompt:
                                 img_array = np.array(img).astype(np.float32) / 255.0
                                 image_tensor = torch.from_numpy(img_array).unsqueeze(0)
                             except Exception as e:
-                                print(f"[ERROR] 图像处理错误: {str(e)}")
-                                text_output += f"\n图像处理错误: {str(e)}"
+                                print(f"[ERROR] Image processing error: {str(e)}")
+                                text_output += f"\nImage processing error: {str(e)}"
             except Exception as e:
-                print(f"[ERROR] API调用错误: {str(e)}")
-                text_output = f"API调用错误: {str(e)}"
+                print(f"[ERROR] API call error: {str(e)}")
+                text_output = f"API call error: {str(e)}"
             
             if image_tensor is None:
                 image_tensor = self.generate_empty_image()
                 
             # if use_seed == "True" and actual_seed is not None:
-            #     seed_info = f"\n\n[种子信息: {actual_seed}]"
+            #     seed_info = f"\n\n[Seed information: {actual_seed}]"
             #     text_output += seed_info
                 
             return (text_output, image_tensor, actual_seed if actual_seed is not None else 0)
