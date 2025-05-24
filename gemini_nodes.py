@@ -321,34 +321,76 @@ class SSL_GeminiTextPrompt:
                 except Exception as seed_error:
                     print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
             
-            text_output = ""
-            image_tensor = None
+            # text_output = "" # Will be initialized in api_call and retrieved from queue
+            # image_tensor = None # Will be initialized in api_call and retrieved from queue
             
             try:
                 print(f"[INFO] Sending API request to Gemini")
                 
                 start_time = time.time()
-                timeout = 30
+                timeout = 30 # Timeout for queue.get()
                 
                 def api_call():
+                    last_exception = None
                     max_retries = 3
                     for attempt in range(max_retries):
+                        current_text_output = ""
+                        current_image_tensor = None # Initialized for each attempt
+
                         try:
+                            print(f"[INFO] API call attempt {attempt + 1}/{max_retries}")
                             api_response = client.models.generate_content(
                                 model=model,
                                 contents=contents,
                                 config=generate_content_config,
                             )
-                            result_queue.put(("success", api_response))
+                            print(f"[INFO] Received API response for attempt {attempt + 1}")
+
+                            if hasattr(api_response, 'candidates') and api_response.candidates:
+                                for part in api_response.candidates[0].content.parts:
+                                    if hasattr(part, 'text') and part.text is not None:
+                                        current_text_output += part.text
+                                    
+                                    elif hasattr(part, 'inline_data') and part.inline_data is not None:
+                                        try:
+                                            inline_data = part.inline_data
+                                            mime_type = inline_data.mime_type
+                                            data = inline_data.data
+                                            
+                                            image_path = self.save_binary_file(data, mime_type)
+                                            
+                                            img = Image.open(image_path)
+                                            
+                                            if img.mode != 'RGB':
+                                                img = img.convert('RGB')
+                                            
+                                            img_array = np.array(img).astype(np.float32) / 255.0
+                                            current_image_tensor = torch.from_numpy(img_array).unsqueeze(0)
+                                        except Exception as img_e:
+                                            print(f"[ERROR] Image processing error during attempt {attempt + 1}: {str(img_e)}")
+                                            current_text_output += f"\nImage processing error: {str(img_e)}"
+                                            if current_image_tensor is None:
+                                                current_image_tensor = self.generate_empty_image()
+                            
+                            if current_image_tensor is None: # Ensure image_tensor is always set
+                                current_image_tensor = self.generate_empty_image()
+
+                            result_queue.put(("success", (current_text_output, current_image_tensor)))
+                            print(f"[INFO] Attempt {attempt + 1}/{max_retries} successful.")
                             return  # Success, exit the function
+
                         except Exception as e:
-                            print(f"[ERROR] API call attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                            last_exception = e
+                            print(f"[ERROR] Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
                             if attempt < max_retries - 1:
-                                time.sleep(1)  # Wait 1 second before retrying
-                            else:
-                                print(f"[ERROR] All {max_retries} API call attempts failed.")
-                                result_queue.put(("error", e))
-                                return # All retries failed
+                                wait_time = 2**attempt # Exponential backoff: 1s, 2s
+                                print(f"[INFO] Waiting {wait_time}s before next attempt...")
+                                time.sleep(wait_time)
+                            # On the last attempt, the loop will end, and we'll put the error in the queue outside the loop.
+
+                    # If all attempts failed
+                    print(f"[ERROR] All {max_retries} API call and processing attempts failed. Last error: {str(last_exception)}")
+                    result_queue.put(("error", last_exception))
 
                 result_queue = queue.Queue()
                 
@@ -356,66 +398,77 @@ class SSL_GeminiTextPrompt:
                 api_thread.daemon = True
                 api_thread.start()
                 
+                text_output = ""
+                image_tensor = self.generate_empty_image() # Default to empty image
+
                 try:
                     status, result = result_queue.get(timeout=timeout)
                     elapsed_time = time.time() - start_time
                     
                     if status == "success":
-                        response = result
-                        print(f"[INFO] API request successfully completed in {elapsed_time:.2f} seconds")
-                    else:
-                        print(f"[ERROR] Error in API request thread, time taken: {elapsed_time:.2f} seconds, error: {str(result)}")
-                        error_str = str(result).lower()
+                        text_output, image_tensor = result # result is now a tuple (text_output, image_tensor)
+                        print(f"[INFO] API request and processing successfully completed in {elapsed_time:.2f} seconds")
+                    else: # status == "error"
+                        error_exception = result
+                        print(f"[ERROR] Error in API request/processing thread after {elapsed_time:.2f} seconds: {str(error_exception)}")
+                        text_output = f"API call/processing error: {str(error_exception)}"
+                        # image_tensor is already self.generate_empty_image()
+                        error_str = str(error_exception).lower()
                         if any(term in error_str for term in ["timeout", "connection", "network", "socket", "连接", "网络"]):
                             if not network_ok and use_proxy != "True":
-                                return (f"API request failed: {str(result)}. Network connection test failed, consider enabling proxy.", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-                        raise result
+                                text_output += " Network connection test failed, consider enabling proxy."
+                                # return (f"API request failed: {str(error_exception)}. Network connection test failed, consider enabling proxy.", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                        # raise result # No need to raise here, already handled by setting text_output
                 except queue.Empty:
                     elapsed_time = time.time() - start_time
-                    print(f"[ERROR] API request timed out, waited: {elapsed_time:.2f} seconds")
+                    print(f"[ERROR] API request/processing timed out in main thread, waited: {elapsed_time:.2f} seconds")
                     
-                    timeout_msg = f"Gemini API request timed out, waited {timeout} seconds."
+                    timeout_msg = f"Gemini API request/processing timed out, waited {timeout} seconds."
                     if not network_ok:
                         if use_proxy == "True":
-                            timeout_msg += f"Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
+                            timeout_msg += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
                         else:
-                            timeout_msg += "Network connection test failed, consider enabling proxy."
+                            timeout_msg += " Network connection test failed, consider enabling proxy."
                     else:
-                        timeout_msg += "Network connection test successful, but API request still timed out. This could be due to a busy server or a large request."
-                    
-                    return (timeout_msg, self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                        timeout_msg += " Network connection test successful, but API request/processing still timed out. This could be due to a busy server or a large request."
+                    text_output = timeout_msg
+                    # image_tensor is already self.generate_empty_image()
+                    # return (timeout_msg, self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
                 
-                print(f"[INFO] Received API response")
+                # print(f"[INFO] Received API response") # This line is now part of api_call or success message
                 
-                if hasattr(response, 'candidates') and response.candidates:
-                    for part in response.candidates[0].content.parts:
-                        if hasattr(part, 'text') and part.text is not None:
-                            text_output += part.text
-                        
-                        elif hasattr(part, 'inline_data') and part.inline_data is not None:
-                            try:
-                                inline_data = part.inline_data
-                                mime_type = inline_data.mime_type
-                                data = inline_data.data
-                                
-                                image_path = self.save_binary_file(data, mime_type)
-                                
-                                img = Image.open(image_path)
-                                
-                                if img.mode != 'RGB':
-                                    img = img.convert('RGB')
-                                
-                                img_array = np.array(img).astype(np.float32) / 255.0
-                                image_tensor = torch.from_numpy(img_array).unsqueeze(0)
-                            except Exception as e:
-                                print(f"[ERROR] Image processing error: {str(e)}")
-                                text_output += f"\nImage processing error: {str(e)}"
-            except Exception as e:
-                print(f"[ERROR] API call error: {str(e)}")
-                text_output = f"API call error: {str(e)}"
+                # The following block is now inside api_call
+                # if hasattr(response, 'candidates') and response.candidates:
+                #     for part in response.candidates[0].content.parts:
+                #         if hasattr(part, 'text') and part.text is not None:
+                #             text_output += part.text
+                #         
+                #         elif hasattr(part, 'inline_data') and part.inline_data is not None:
+                #             try:
+                #                 inline_data = part.inline_data
+                #                 mime_type = inline_data.mime_type
+                #                 data = inline_data.data
+                #                 
+                #                 image_path = self.save_binary_file(data, mime_type)
+                #                 
+                #                 img = Image.open(image_path)
+                #                 
+                #                 if img.mode != 'RGB':
+                #                     img = img.convert('RGB')
+                #                 
+                #                 img_array = np.array(img).astype(np.float32) / 255.0
+                #                 image_tensor = torch.from_numpy(img_array).unsqueeze(0)
+                #             except Exception as e:
+                #                 print(f"[ERROR] Image processing error: {str(e)}")
+                #                 text_output += f"\nImage processing error: {str(e)}"
+            except Exception as e: # Catch-all for unforeseen errors in the main try block
+                print(f"[ERROR] Unhandled error in generate method: {str(e)}")
+                text_output = f"Unhandled error: {str(e)}"
+                if image_tensor is None: # Ensure image_tensor is set
+                    image_tensor = self.generate_empty_image()
             
-            if image_tensor is None:
-                image_tensor = self.generate_empty_image()
+            # if image_tensor is None: # This should be handled by initialization or in api_call
+            #     image_tensor = self.generate_empty_image()
                 
             # if use_seed == "True" and actual_seed is not None:
             #     seed_info = f"\n\n[Seed information: {actual_seed}]"
