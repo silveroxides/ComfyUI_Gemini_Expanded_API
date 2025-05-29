@@ -1,11 +1,11 @@
-# ComfyUI Gemini Flash Node
+# ComfyUI Gemini Expanded API Node
 
 This is a Google Gemini API integration node for ComfyUI, supporting text generation and image generation functions. With this node, you can directly use Google's Gemini 2.0 series models in your ComfyUI workflow.
 Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has no attribute 'parts', it means that the image or prompt you uploaded violates the "Generative AI Prohibited Use Policy". Please test with general scene or product images first to ensure compliance.
 
-![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo.png?raw=true)
+![](https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API/blob/main/demo/demo.png?raw=true)
 ---
-![](https://github.com/tatookan/comfyui_ssl_gemini_EXP/blob/main/demo/demo2.png?raw=true)
+![](https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API/blob/main/demo/demo2.png?raw=true)
 
 ## Updates
 2024.3.19: Updated to support multi-image processing.
@@ -25,11 +25,11 @@ Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has n
 2. Clone or download this repository into ComfyUI's `custom_nodes` directory:
    ```
    cd ComfyUI/custom_nodes
-   git clone https://github.com/tatookan/comfyui_ssl_gemini_EXP.git
+   git clone https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API.git
    ```
 3. Install dependencies:
    ```
-   cd comfyui_ssl_gemini_EXP
+   cd ComfyUI_Gemini_Expanded_API
    pip install -r requirements.txt
    ```
 4. Restart ComfyUI.
@@ -41,11 +41,11 @@ Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has n
 First, you need to obtain a Google Gemini API key:
 1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Create an API key
-3. In ComfyUI, locate and use the `💠SSL/API/Gemini/API Key Config` node to enter your API key.
+3. In ComfyUI, locate and use the `Configure Gemini API Key` node to enter your API key.
 
 ### 2. Text Generation
 
-Use the `💠SSL/API/Gemini/Text Prompt` node for text generation:
+Use the `Expanded Gemini Text/Image` node for text generation:
 
 - Connect the API key configuration node to the `config` input.
 - Enter your prompt text in `prompt`.
@@ -113,9 +113,4 @@ Text generation node output:
 ## Acknowledgements
 
 Thanks to Google for providing the Gemini API service.
-
-# Contact Details
-Email: dianyuanan@vip.qq.com  
-Join my fan group: Contact WeChat: Miss-Y-s-Honey (please state your purpose when adding).
-Check out my tutorial channel [bilibili@深深蓝hana](https://space.bilibili.com/618554?spm_id_from=333.1007.0.0) (Channel name is in Chinese: 深深蓝hana)
-Daily work sharing [douyin@深深蓝](https://www.douyin.com/user/MS4wLjABAAAAJGu7yCfV3XwKoklBX62bivvat3micLxemdDT0FAmdcGfqbuFS3ItsKWKrBt5Hg16?from_tab_name=) (Profile name is in Chinese: 深深蓝)
+Thanks to [tatookan](https://github.com/tatookan) for creating the original custom node repository for me to expand upon.
