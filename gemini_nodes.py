@@ -73,6 +73,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
                 "max_output_tokens": (IO.INT, {"default": 8192, "min": 1, "max": 8192, "step": 1}),
                 "include_images": (IO.BOOLEAN, {"default": True}),
+                "bypass_mode": (["None", "system_instruction", "prompt", "both"], {"default": "None"}),
             },
             "optional": {
                 "input_image": (IO.IMAGE,),
@@ -89,6 +90,13 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     RETURN_NAMES = ("text", "image", "seed")
     FUNCTION = "generate"
     CATEGORY = "API/Gemini"
+
+    def _pad_text_with_joiners(self, text: str) -> str:
+        if not text:
+            return ""
+        # Use Word Joiner (U+2060) instead of joiner
+        padding_char = "⁠"
+        return padding_char + padding_char.join(list(text)) + padding_char
 
     def save_binary_file(self, data, mime_type):
         ext = ".bin"
@@ -113,7 +121,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         tensor = torch.from_numpy(empty_image).unsqueeze(0)
         return tensor
 
-    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
+    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images, bypass_mode,
                 input_image=None, input_image_2=None, use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890,
                 use_seed=True, seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
@@ -122,6 +130,15 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         original_https_proxy_lower = os.environ.get('https_proxy')
 
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
+
+        # Pad text based on bypass_mode
+        padded_prompt = prompt
+        padded_system_instruction = system_instruction
+
+        if bypass_mode == "prompt" or bypass_mode == "both":
+            padded_prompt = self._pad_text_with_joiners(prompt)
+        if bypass_mode == "system_instruction" or bypass_mode == "both":
+            padded_system_instruction = self._pad_text_with_joiners(system_instruction)
 
         actual_seed = None
         if use_seed == True:
@@ -267,12 +284,12 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
                         img_parts.append(img_part)
 
-                    contents = img_parts + [{"text": prompt}]
+                    contents = img_parts + [{"text": padded_prompt}]
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
                     return (f"Error processing input image: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             else:
-                contents = prompt
+                contents = padded_prompt
 
             response_modalities = ["text"]
             if include_images == True:
@@ -303,7 +320,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 ],
                 response_modalities=response_modalities,
                 system_instruction=[
-                    types.Part.from_text(text=system_instruction),
+                    types.Part.from_text(text=padded_system_instruction),
                 ],
             )
 
