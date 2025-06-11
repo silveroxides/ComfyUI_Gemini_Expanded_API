@@ -91,10 +91,10 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     FUNCTION = "generate"
     CATEGORY = "API/Gemini"
 
-    def _pad_text_with_underscores(self, text: str) -> str:
+    def _pad_text_with_joiners(self, text: str) -> str:
         if not text:
             return ""
-        # Use Word Joiner (U+2060) instead of underscore
+        # Use Word Joiner (U+2060) instead of joiner
         padding_char = "⁠"
         return padding_char + padding_char.join(list(text)) + padding_char
 
@@ -136,9 +136,9 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         padded_system_instruction = system_instruction
 
         if bypass_mode == "prompt" or bypass_mode == "both":
-            padded_prompt = self._pad_text_with_underscores(prompt)
+            padded_prompt = self._pad_text_with_joiners(prompt)
         if bypass_mode == "system_instruction" or bypass_mode == "both":
-            padded_system_instruction = self._pad_text_with_underscores(system_instruction)
+            padded_system_instruction = self._pad_text_with_joiners(system_instruction)
 
         actual_seed = None
         if use_seed == True:
