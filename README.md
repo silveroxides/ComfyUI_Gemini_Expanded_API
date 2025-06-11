@@ -3,10 +3,6 @@
 This is a Google Gemini API integration node for ComfyUI, supporting text generation and image generation functions. With this node, you can directly use Google's Gemini 2.0 series models in your ComfyUI workflow.
 Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has no attribute 'parts', it means that the image or prompt you uploaded violates the "Generative AI Prohibited Use Policy". Please test with general scene or product images first to ensure compliance.
 
-![](https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API/blob/main/demo/demo.png?raw=true)
----
-![](https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API/blob/main/demo/demo2.png?raw=true)
-
 ## Updates
 2024.3.19: Updated to support multi-image processing.
 ## Features
