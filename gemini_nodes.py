@@ -52,7 +52,7 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
     RETURN_TYPES = ("GEMINI_CONFIG",)
     RETURN_NAMES = ("config",)
     FUNCTION = "configure"
-    CATEGORY = "💠SSL/API/Gemini"
+    CATEGORY = "API/Gemini"
 
     def configure(self, api_key):
         config = {"api_key": api_key}
@@ -88,7 +88,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     RETURN_TYPES = ("STRING", "IMAGE", "INT")
     RETURN_NAMES = ("text", "image", "seed")
     FUNCTION = "generate"
-    CATEGORY = "💠SSL/API/Gemini"
+    CATEGORY = "API/Gemini"
 
     def save_binary_file(self, data, mime_type):
         ext = ".bin"
@@ -199,8 +199,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                             print(f"[WARNING] Failed to set HTTP client proxy: {str(proxy_error)}")
                     except ImportError as e:
                         print(f"[WARNING] Failed to import Google API HTTP client library: {str(e)}")
-
-                client = genai.Client(api_key=config["api_key"], http_options=types.HttpOptions(api_version='v1alpha'), **client_options)
+                client = genai.Client(api_key=config["api_key"], **client_options)
                 print(f"[INFO] Gemini client initialized successfully")
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
