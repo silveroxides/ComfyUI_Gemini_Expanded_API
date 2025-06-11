@@ -94,7 +94,9 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     def _pad_text_with_underscores(self, text: str) -> str:
         if not text:
             return ""
-        return "_" + "_".join(list(text)) + "_"
+        # Use Word Joiner (U+2060) instead of underscore
+        padding_char = "⁠"
+        return padding_char + padding_char.join(list(text)) + padding_char
 
     def save_binary_file(self, data, mime_type):
         ext = ".bin"
