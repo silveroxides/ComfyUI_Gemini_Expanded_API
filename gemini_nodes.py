@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import re
 import torch
 import numpy as np
 from PIL import Image
@@ -94,9 +95,17 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     def _pad_text_with_joiners(self, text: str) -> str:
         if not text:
             return ""
-        # Use Word Joiner (U+2060) instead of joiner
-        padding_char = "⁠"
-        return padding_char + padding_char.join(list(text)) + padding_char
+            
+        padding_char = "\u2060"
+        
+        # Build the pattern using an f-string to correctly embed the unicode char.
+        # This is not a raw string.
+        pattern = f"([^{padding_char}])(?=[^{padding_char}])"
+        replacement = r"\1" + padding_char
+        
+        joined_text = re.sub(pattern, replacement, text)
+        
+        return padding_char + joined_text + padding_char
 
     def save_binary_file(self, data, mime_type):
         ext = ".bin"
@@ -137,8 +146,10 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
         if bypass_mode == "prompt" or bypass_mode == "both":
             padded_prompt = self._pad_text_with_joiners(prompt)
+            print(padded_prompt)
         if bypass_mode == "system_instruction" or bypass_mode == "both":
             padded_system_instruction = self._pad_text_with_joiners(system_instruction)
+            print(padded_system_instruction)
 
         actual_seed = None
         if use_seed == True:
@@ -295,6 +306,8 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
             if include_images == True:
                 response_modalities.append("image")
 
+            print(padded_prompt)
+            print(padded_system_instruction)
             generate_content_config = types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
