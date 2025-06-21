@@ -47,6 +47,7 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
         return {
             "required": {
                 "api_key": (IO.STRING, {"multiline": False}),
+                "api_version": (["v1", "v1alpha", "v1beta", "v2beta"], {"default": "v1alpha"}),
             }
         }
 
@@ -55,8 +56,8 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
     FUNCTION = "configure"
     CATEGORY = "API/Gemini"
 
-    def configure(self, api_key):
-        config = {"api_key": api_key}
+    def configure(self, api_key, api_version):
+        config = {"api_key": api_key, "api_version": api_version}
         return (config,)
 
 
@@ -68,7 +69,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "config": ("GEMINI_CONFIG",),
                 "prompt": (IO.STRING, {"multiline": True}),
                 "system_instruction": (IO.STRING, {"default": "You are a helpful AI assistant.", "multiline": True}),
-                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-flash-live", "gemini-2.5-flash", "gemini-2.5", "gemini-2.5-pro-1p-freebie"], {"default": "gemini-2.0-flash"}),
+                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-flash-live", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17"], {"default": "gemini-2.0-flash"}),
                 "temperature": (IO.FLOAT, {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_p": (IO.FLOAT, {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
@@ -95,17 +96,37 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     def _pad_text_with_joiners(self, text: str) -> str:
         if not text:
             return ""
-            
-        padding_char = "\u2060"
-        
+
+
         # Build the pattern using an f-string to correctly embed the unicode char.
         # This is not a raw string.
-        pattern = f"([^{padding_char}])(?=[^{padding_char}])"
-        replacement = r"\1" + padding_char
-        
-        joined_text = re.sub(pattern, replacement, text)
-        
-        return padding_char + joined_text + padding_char
+        patternperiod = r"\."
+        patternspace = r"\s"
+        patterncomma = r","
+        patterndash = r"\-"
+        patternsingq = r"\'"
+        patterndoubq = r"\""
+        patternword = r"(.)(?=.)"
+
+        replperiod = r"。"
+        replspace = r"﻿"
+        replcomma = r"、"
+        repldash = r"‐"
+        replsingq = r"ʼ"
+        repldoubq = r"ˮ"
+        replword = r"⁠\1⁠﻿"
+
+        joined_textperiod = re.sub(patternperiod, replperiod, text)
+        joined_textspace = re.sub(patternspace, replspace, joined_textperiod)
+        joined_textcomma = re.sub(patterncomma, replcomma, joined_textspace)
+        joined_textdash = re.sub(patterndash, repldash, joined_textcomma)
+        joined_textsingq = re.sub(patternsingq, replsingq, joined_textdash)
+        joined_textdoubq = re.sub(patterndoubq, repldoubq, joined_textsingq)
+        joined_textfinal = re.sub(patternword, replword, joined_textdoubq)
+
+        print(joined_textfinal)
+
+        return joined_textfinal
 
     def save_binary_file(self, data, mime_type):
         ext = ".bin"
@@ -227,7 +248,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                             print(f"[WARNING] Failed to set HTTP client proxy: {str(proxy_error)}")
                     except ImportError as e:
                         print(f"[WARNING] Failed to import Google API HTTP client library: {str(e)}")
-                client = genai.Client(api_key=config["api_key"], **client_options)
+                client = genai.Client(api_key=config["api_key"], http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
                 print(f"[INFO] Gemini client initialized successfully")
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
