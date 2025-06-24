@@ -329,34 +329,61 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
             print(padded_prompt)
             print(padded_system_instruction)
-            generate_content_config = types.GenerateContentConfig(
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                max_output_tokens=max_output_tokens,
-                safety_settings=[
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE",
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE",
-                    ),
-                ],
-                response_modalities=response_modalities,
-                system_instruction=[
-                    types.Part.from_text(text=padded_system_instruction),
-                ],
-            )
+            if include_images == True:
+                generate_content_config = types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_output_tokens=max_output_tokens,
+                    safety_settings=[
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HARASSMENT",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HATE_SPEECH",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold="BLOCK_NONE",
+                        ),
+                    ],
+                    response_modalities=response_modalities,
+                )
+            else:
+                generate_content_config = types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_output_tokens=max_output_tokens,
+                    safety_settings=[
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HARASSMENT",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_HATE_SPEECH",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            threshold="BLOCK_NONE",
+                        ),
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold="BLOCK_NONE",
+                        ),
+                    ],
+                    response_modalities=response_modalities,
+                    system_instruction=[
+                        types.Part.from_text(text=padded_system_instruction),
+                    ],
+                )
 
             if use_seed == True and actual_seed is not None:
                 try:
