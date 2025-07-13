@@ -69,7 +69,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "config": ("GEMINI_CONFIG",),
                 "prompt": (IO.STRING, {"multiline": True}),
                 "system_instruction": (IO.STRING, {"default": "You are a helpful AI assistant.", "multiline": True}),
-                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-flash-live", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17"], {"default": "gemini-2.0-flash"}),
+                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-flash-live", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17", "gemini-beta-3.0-pro"], {"default": "gemini-2.0-flash"}),
                 "temperature": (IO.FLOAT, {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_p": (IO.FLOAT, {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
@@ -234,7 +234,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                             }
                             session.proxies.update(proxies)
 
-                            adapter = ProxyAdapter(proxy_url, max_retries=2)
+                            adapter = ProxyAdapter(proxy_url, max_retries=1)
                             session.mount('http://', adapter)
                             session.mount('https://', adapter)
 
@@ -337,20 +337,24 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     max_output_tokens=max_output_tokens,
                     safety_settings=[
                         types.SafetySetting(
-                            category="HARM_CATEGORY_HARASSMENT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                     ],
                     response_modalities=response_modalities,
@@ -363,20 +367,24 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     max_output_tokens=max_output_tokens,
                     safety_settings=[
                         types.SafetySetting(
-                            category="HARM_CATEGORY_HARASSMENT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_HATE_SPEECH",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                         types.SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="BLOCK_NONE",
+                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
                         ),
                     ],
                     response_modalities=response_modalities,
@@ -399,7 +407,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
                 def api_call():
                     last_api_exception = None
-                    max_retries = 3
+                    max_retries = 1
                     api_response = None
 
                     for attempt in range(max_retries):
