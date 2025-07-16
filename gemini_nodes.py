@@ -76,7 +76,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "max_output_tokens": (IO.INT, {"default": 8192, "min": 1, "max": 8192, "step": 1}),
                 "include_images": (IO.BOOLEAN, {"default": True}),
                 "bypass_mode": (["None", "system_instruction", "prompt", "both"], {"default": "None"}),
-                "thinking_budget": (IO.INT, {"default": 0, "min": 0, "max": 24576, "step": 1, "tooltip": "0 disables thinking mode, 1 will activate it as default thinking budget and anything above sets specific budget"}),
+                "thinking_budget": (IO.INT, {"default": 0, "min": -1, "max": 24576, "step": 1, "tooltip": "0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"}),
             },
             "optional": {
                 "input_image": (IO.IMAGE,),
