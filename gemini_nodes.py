@@ -76,6 +76,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "max_output_tokens": (IO.INT, {"default": 8192, "min": 1, "max": 8192, "step": 1}),
                 "include_images": (IO.BOOLEAN, {"default": True}),
                 "bypass_mode": (["None", "system_instruction", "prompt", "both"], {"default": "None"}),
+                "thinking_budget": (IO.INT, {"default": 0, "min": 0, "max": 24576, "step": 1, "tooltip": "0 disables thinking mode, 1 will activate it as default thinking budget and anything above sets specific budget"}),
             },
             "optional": {
                 "input_image": (IO.IMAGE,),
@@ -152,12 +153,13 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         return tensor
 
     def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images, bypass_mode,
-                input_image=None, input_image_2=None, use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890,
+                thinking_budget, input_image=None, input_image_2=None, use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890,
                 use_seed=True, seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
         original_https_proxy_lower = os.environ.get('https_proxy')
+        thinking_models = ["gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17", "gemini-beta-3.0-pro"]
 
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
 
@@ -358,6 +360,42 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         ),
                     ],
                     response_modalities=response_modalities,
+                )
+            elif model in thinking_models:
+                generate_content_config = types.GenerateContentConfig(
+                    thinking_config = types.ThinkingConfig(
+                        thinking_budget=thinking_budget,
+                    ),
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_output_tokens=max_output_tokens,
+                    safety_settings=[
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                    ],
+                    response_modalities=response_modalities,
+                    system_instruction=[
+                        types.Part.from_text(text=padded_system_instruction),
+                    ],
                 )
             else:
                 generate_content_config = types.GenerateContentConfig(
