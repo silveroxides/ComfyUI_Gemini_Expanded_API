@@ -41,6 +41,98 @@ try:
 except Exception as e:
     print(f"[WARNING] Error checking dependencies: {str(e)}")
 
+class GetKeyAPI(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "json_path": (IO.STRING, {"default": "./input/apikeys.json", "multiline": False, "tooltip": "Path to a .json file with simple top level structure with name as key and api-key as value. See example in custom node folder."}),
+                "key_id_method": (["custom", "random_rotate", "increment_rotate"], {"default": "custom", "tooltip": "custom sets api-key to the api-key with the name set in the key_id widget. random_rotate randomly switches between keys if multiple in the .json and increment_rotate does it in order from first to last, then repeats."}),
+                "rotation_interval": (IO.INT, {"default": 0, "min": 0, "tooltip": "how many steps to jump when doing rotate."}),
+            },
+            "optional": {
+                "key_id": (IO.STRING, {"default": "placeholder", "multiline": False, "tooltip": "Put name of key in the .json here if using custom in key_id_method."}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("API_KEY",)
+    FUNCTION = "getapikey"
+    CATEGORY = "utils/api_keys"
+
+    def getapikey(self, json_path, key_id_method, rotation_interval, key_id="placeholder"):
+        """
+        Loads API keys from a JSON file (top-level dictionary)
+        and selects one based on the specified method.
+
+        Args:
+            json_path (str): Path to the JSON file. Expected format:
+                             {"key_id_1": "api_key_value_1", "key_id_2": "api_key_value_2", ...}
+            key_id_method (str): Method to select the key ('custom', 'random_rotate', 'increment_rotate').
+            rotation_interval (int): Used as index for 'increment_rotate'.
+            key_id (str, optional): ID (key name) of the key to select if key_id_method is 'custom'. Defaults to "placeholder".
+
+        Returns:
+            str: The selected API key string.
+            Raises: ValueError or RuntimeError if unable to find or select a key.
+        """
+        api_keys_data = None
+        absolute_json_path = os.path.abspath(json_path)
+
+        try:
+            with open(absolute_json_path, 'r') as f:
+                api_keys_data = json.load(f)
+        except FileNotFoundError:
+            raise ValueError(f"RotateKeyAPI Error: JSON file not found at {absolute_json_path}")
+        except json.JSONDecodeError:
+            raise ValueError(f"RotateKeyAPI Error: Could not decode JSON from {absolute_json_path}. Check file format.")
+        except Exception as e:
+            raise RuntimeError(f"RotateKeyAPI Error: Unexpected error reading file {absolute_json_path}: {e}")
+
+        if not isinstance(api_keys_data, dict):
+            raise ValueError(f"RotateKeyAPI Error: JSON content is not a dictionary in {absolute_json_path}. Expected format: {{'key_id': 'api_key', ...}}")
+
+        if not api_keys_data:
+             raise ValueError(f"RotateKeyAPI Error: The JSON dictionary in {absolute_json_path} is empty.")
+
+        selected_key_value = None
+
+        if key_id_method == "custom":
+            if key_id == "placeholder":
+                 print("RotateKeyAPI Warning: 'custom' method selected but 'key_id' is still the default 'placeholder'. Ensure this is intended or provide a valid key ID.")
+
+            selected_key_value = api_keys_data.get(key_id)
+
+            if selected_key_value is None:
+                 raise ValueError(f"RotateKeyAPI Error: Custom key ID '{key_id}' not found in the JSON dictionary keys.")
+
+
+        elif key_id_method == "random_rotate":
+            api_keys_list = list(api_keys_data.values())
+
+            selected_key_value = random.choice(api_keys_list)
+
+        elif key_id_method == "increment_rotate":
+             api_keys_list = list(api_keys_data.values())
+
+             index = rotation_interval % len(api_keys_list)
+
+             try:
+                selected_key_value = api_keys_list[index]
+             except IndexError:
+                 raise IndexError(f"RotateKeyAPI Error: Calculated index {index} (from interval {rotation_interval}) is out of bounds for list of size {len(api_keys_list)}.")
+             except Exception as e:
+                  raise RuntimeError(f"RotateKeyAPI Error: Unexpected error accessing item at index {index}: {e}")
+
+        if not isinstance(selected_key_value, str) or not selected_key_value:
+             raise ValueError(f"RotateKeyAPI Error: Retrieved value for selected key is not a valid string. Value: {selected_key_value}")
+
+
+        print(f"RotateKeyAPI: Successfully retrieved API key using method '{key_id_method}'.")
+        return (selected_key_value,)
+
+
+
 class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
@@ -48,6 +140,11 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
             "required": {
                 "api_key": (IO.STRING, {"multiline": False}),
                 "api_version": (["v1", "v1alpha", "v1beta", "v2beta"], {"default": "v1alpha"}),
+                "vertexai": (IO.BOOLEAN, {"default": False}),
+            },
+            "optional": {
+                "vertexai_project": (IO.STRING, {"default": "placeholder", "multiline": False}),
+                "vertexai_location": (IO.STRING, {"default": "placeholder", "multiline": False}),
             }
         }
 
@@ -56,8 +153,8 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
     FUNCTION = "configure"
     CATEGORY = "API/Gemini"
 
-    def configure(self, api_key, api_version):
-        config = {"api_key": api_key, "api_version": api_version}
+    def configure(self, api_key, api_version, vertexai, vertexai_project, vertexai_location):
+        config = {"api_key": api_key, "api_version": api_version, "vertexai": vertexai, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
         return (config,)
 
 
@@ -75,6 +172,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
                 "max_output_tokens": (IO.INT, {"default": 8192, "min": 1, "max": 65536, "step": 1}),
                 "include_images": (IO.BOOLEAN, {"default": True}),
+                "aspect_ratio": (["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], {"default": "None"}),
                 "bypass_mode": (["None", "system_instruction", "prompt", "both"], {"default": "None"}),
                 "thinking_budget": (IO.INT, {"default": 0, "min": -1, "max": 24576, "step": 1, "tooltip": "0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"}),
             },
@@ -152,9 +250,9 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         tensor = torch.from_numpy(empty_image).unsqueeze(0)
         return tensor
 
-    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images, bypass_mode,
-                thinking_budget, input_image=None, input_image_2=None, use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890,
-                use_seed=True, seed=0):
+    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
+                aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
+                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=True, seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
@@ -250,7 +348,13 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                             print(f"[WARNING] Failed to set HTTP client proxy: {str(proxy_error)}")
                     except ImportError as e:
                         print(f"[WARNING] Failed to import Google API HTTP client library: {str(e)}")
-                client = genai.Client(api_key=config["api_key"], http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
+                vertexai = config["vertexai"]
+                if vertexai == True:
+                    project = config["vertexai_project"]
+                    location = config["vertexai_location"]
+                    client = genai.Client(vertexai=vertexai, project=project, location=location, http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
+                else:
+                    client = genai.Client(api_key=config["api_key"], http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
                 print(f"[INFO] Gemini client initialized successfully")
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
@@ -325,9 +429,10 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
             else:
                 contents = padded_prompt
 
-            response_modalities = ["text"]
             if include_images == True:
-                response_modalities.append("image")
+                response_modalities = ["IMAGE", "TEXT"]
+            else:
+                response_modalities = ["TEXT"]
 
             print(padded_prompt)
             print(padded_system_instruction)
@@ -336,106 +441,91 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
+                    seed=seed,
                     max_output_tokens=max_output_tokens,
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ],
+                    safety_settings=[types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
+                        threshold="BLOCK_NONE"
+                    )],
                     response_modalities=response_modalities,
+                    image_config=types.ImageConfig(
+                        aspect_ratio=aspect_ratio,
+                    ),
+                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
             elif model in thinking_models:
                 generate_content_config = types.GenerateContentConfig(
-                    thinking_config = types.ThinkingConfig(
-                        thinking_budget=thinking_budget,
-                    ),
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
+                    seed=seed,
                     max_output_tokens=max_output_tokens,
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ],
+                    safety_settings=[types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
+                        threshold="BLOCK_NONE"
+                    )],
+                    thinking_config = types.ThinkingConfig(
+                        thinking_budget=thinking_budget,
+                    ),
                     response_modalities=response_modalities,
-                    system_instruction=[
-                        types.Part.from_text(text=padded_system_instruction),
-                    ],
+                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
             else:
                 generate_content_config = types.GenerateContentConfig(
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
+                    seed=seed,
                     max_output_tokens=max_output_tokens,
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ],
+                    safety_settings=[types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
+                        threshold="BLOCK_NONE"
+                    )],
                     response_modalities=response_modalities,
-                    system_instruction=[
-                        types.Part.from_text(text=padded_system_instruction),
-                    ],
+                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
 
-            if use_seed == True and actual_seed is not None:
-                try:
-                    generate_content_config.seed = actual_seed
-                except Exception as seed_error:
-                    print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
+            # if use_seed == True and actual_seed is not None:
+            #     try:
+            #         generate_content_config.seed = actual_seed
+            #     except Exception as seed_error:
+            #         print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
 
             try:
                 print(f"[INFO] Sending API request to Gemini")
@@ -452,16 +542,16 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         try:
                             print(f"[INFO] API call attempt {attempt + 1}/{max_retries}")
 
-                            if use_seed and actual_seed is not None:
-                                current_seed_for_api_call = actual_seed + attempt
-                                try:
-                                    generate_content_config.seed = current_seed_for_api_call
-                                    if attempt > 0:
-                                        print(f"[INFO] Retrying with incremented seed: {current_seed_for_api_call}")
-                                except AttributeError:
-                                    print(f"[WARNING] Could not set 'seed' attribute on generate_content_config.")
-                                except Exception as e_set_seed:
-                                    print(f"[WARNING] Error setting seed {current_seed_for_api_call} for attempt {attempt + 1}: {str(e_set_seed)}")
+                            # if use_seed and actual_seed is not None:
+                            #     current_seed_for_api_call = actual_seed + attempt
+                            #     try:
+                            #         generate_content_config.seed = current_seed_for_api_call
+                            #         if attempt > 0:
+                            #             print(f"[INFO] Retrying with incremented seed: {current_seed_for_api_call}")
+                            #     except AttributeError:
+                            #         print(f"[WARNING] Could not set 'seed' attribute on generate_content_config.")
+                            #     except Exception as e_set_seed:
+                            #         print(f"[WARNING] Error setting seed {current_seed_for_api_call} for attempt {attempt + 1}: {str(e_set_seed)}")
 
                             response = client.models.generate_content(
                                 model=model,
@@ -623,9 +713,11 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 NODE_CLASS_MAPPINGS = {
     "SSL_GeminiAPIKeyConfig": SSL_GeminiAPIKeyConfig,
     "SSL_GeminiTextPrompt": SSL_GeminiTextPrompt,
+    "GetKeyAPI": GetKeyAPI,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SSL_GeminiAPIKeyConfig": "Configure Gemini API Key",
     "SSL_GeminiTextPrompt": "Expanded Gemini Text/Image",
+    "GetKeyAPI": "Get API Key from JSON",
 }
