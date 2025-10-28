@@ -183,7 +183,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "proxy_host": (IO.STRING, {"default": "127.0.0.1"}),
                 "proxy_port": (IO.INT, {"default": 7890, "min": 1, "max": 65535}),
                 "use_seed": (IO.BOOLEAN, {"default": True}),
-                "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647}),
+                "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647, "control_after_generate": True}),
             }
         }
 
@@ -252,7 +252,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
     def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
                 aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
-                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=True, seed=0):
+                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0):
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
@@ -470,7 +470,6 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
-                    seed=seed,
                     max_output_tokens=max_output_tokens,
                     safety_settings=[types.SafetySetting(
                         category="HARM_CATEGORY_HARASSMENT",
@@ -499,7 +498,6 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
-                    seed=seed,
                     max_output_tokens=max_output_tokens,
                     safety_settings=[types.SafetySetting(
                         category="HARM_CATEGORY_HARASSMENT",
@@ -521,11 +519,11 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
 
-            # if use_seed == True and actual_seed is not None:
-            #     try:
-            #         generate_content_config.seed = actual_seed
-            #     except Exception as seed_error:
-            #         print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
+            if use_seed == True and actual_seed is not None:
+                try:
+                    generate_content_config.seed = actual_seed
+                except Exception as seed_error:
+                    print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
 
             try:
                 print(f"[INFO] Sending API request to Gemini")
@@ -542,16 +540,16 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         try:
                             print(f"[INFO] API call attempt {attempt + 1}/{max_retries}")
 
-                            # if use_seed and actual_seed is not None:
-                            #     current_seed_for_api_call = actual_seed + attempt
-                            #     try:
-                            #         generate_content_config.seed = current_seed_for_api_call
-                            #         if attempt > 0:
-                            #             print(f"[INFO] Retrying with incremented seed: {current_seed_for_api_call}")
-                            #     except AttributeError:
-                            #         print(f"[WARNING] Could not set 'seed' attribute on generate_content_config.")
-                            #     except Exception as e_set_seed:
-                            #         print(f"[WARNING] Error setting seed {current_seed_for_api_call} for attempt {attempt + 1}: {str(e_set_seed)}")
+                            if use_seed and actual_seed is not None:
+                                current_seed_for_api_call = actual_seed + attempt
+                                try:
+                                    generate_content_config.seed = current_seed_for_api_call
+                                    if attempt > 0:
+                                        print(f"[INFO] Retrying with incremented seed: {current_seed_for_api_call}")
+                                except AttributeError:
+                                    print(f"[WARNING] Could not set 'seed' attribute on generate_content_config.")
+                                except Exception as e_set_seed:
+                                    print(f"[WARNING] Error setting seed {current_seed_for_api_call} for attempt {attempt + 1}: {str(e_set_seed)}")
 
                             response = client.models.generate_content(
                                 model=model,
