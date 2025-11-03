@@ -159,6 +159,28 @@ class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
 
 
 class SSL_GeminiTextPrompt(ComfyNodeABC):
+    def __init__(self):
+        super().__init__()
+        # Initialize cache state
+        self.last_input_seed = None
+        self.last_actual_seed = None
+        self.last_text_output = None
+        self.last_image_tensor = None
+        self.last_config = None
+        self.last_prompt = None
+        self.last_system_instruction = None
+        self.last_model = None
+        self.last_temperature = None
+        self.last_top_p = None
+        self.last_top_k = None
+        self.last_max_output_tokens = None
+        self.last_include_images = None
+        self.last_aspect_ratio = None
+        self.last_bypass_mode = None
+        self.last_thinking_budget = None
+        self.last_input_image = None
+        self.last_input_image_2 = None
+
     @classmethod
     def INPUT_TYPES(cls) -> InputTypeDict:
         return {
@@ -166,7 +188,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "config": ("GEMINI_CONFIG",),
                 "prompt": (IO.STRING, {"multiline": True}),
                 "system_instruction": (IO.STRING, {"default": "You are a helpful AI assistant.", "multiline": True}),
-                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-flash-live", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash-image-preview"], {"default": "gemini-2.0-flash"}),
+                "model": (["gemini-1.0-pro", "gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-pro", "gemini-2.0-pro-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash-image-preview"], {"default": "gemini-2.0-flash"}),
                 "temperature": (IO.FLOAT, {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_p": (IO.FLOAT, {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
@@ -253,6 +275,40 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
     def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
                 aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0):
+
+        # Helper for comparing optional tensors
+        def compare_tensors(t1, t2):
+            if t1 is None and t2 is None:
+                return True
+            if t1 is not None and t2 is not None:
+                return torch.equal(t1, t2)
+            return False
+
+        # Comprehensive cache check
+        is_cached = (
+            use_seed and
+            self.last_image_tensor is not None and
+            self.last_input_seed == seed and
+            self.last_config == config and
+            self.last_prompt == prompt and
+            self.last_system_instruction == system_instruction and
+            self.last_model == model and
+            self.last_temperature == temperature and
+            self.last_top_p == top_p and
+            self.last_top_k == top_k and
+            self.last_max_output_tokens == max_output_tokens and
+            self.last_include_images == include_images and
+            self.last_aspect_ratio == aspect_ratio and
+            self.last_bypass_mode == bypass_mode and
+            self.last_thinking_budget == thinking_budget and
+            compare_tensors(self.last_input_image, input_image) and
+            compare_tensors(self.last_input_image_2, input_image_2)
+        )
+
+        if is_cached:
+            print(f"[INFO] All inputs match the previous run with seed ({seed}). Returning cached result.")
+            return (self.last_text_output, self.last_image_tensor, self.last_actual_seed)
+
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
@@ -670,7 +726,29 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 if image_tensor is None:
                     image_tensor = self.generate_empty_image()
 
-            return (text_output, image_tensor, actual_seed if actual_seed is not None else 0)
+            final_actual_seed = actual_seed if actual_seed is not None else 0
+            if use_seed:
+                # Update cache with all current inputs and outputs
+                self.last_input_seed = seed
+                self.last_actual_seed = final_actual_seed
+                self.last_text_output = text_output
+                self.last_image_tensor = image_tensor
+                self.last_config = config
+                self.last_prompt = prompt
+                self.last_system_instruction = system_instruction
+                self.last_model = model
+                self.last_temperature = temperature
+                self.last_top_p = top_p
+                self.last_top_k = top_k
+                self.last_max_output_tokens = max_output_tokens
+                self.last_include_images = include_images
+                self.last_aspect_ratio = aspect_ratio
+                self.last_bypass_mode = bypass_mode
+                self.last_thinking_budget = thinking_budget
+                self.last_input_image = input_image.clone() if input_image is not None else None
+                self.last_input_image_2 = input_image_2.clone() if input_image_2 is not None else None
+
+            return (text_output, image_tensor, final_actual_seed)
         finally:
             if original_http_proxy:
                 os.environ['HTTP_PROXY'] = original_http_proxy
