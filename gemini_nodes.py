@@ -206,6 +206,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "proxy_port": (IO.INT, {"default": 7890, "min": 1, "max": 65535}),
                 "use_seed": (IO.BOOLEAN, {"default": True}),
                 "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647, "control_after_generate": True}),
+                "timeout": (IO.INT, {"default": 30, "min": 15, "max": 300, "step": 15}),
             }
         }
 
@@ -273,8 +274,8 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         return tensor
 
     def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
-                aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
-                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0):
+                aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None, use_proxy=False,
+                proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30):
 
         # Helper for comparing optional tensors
         def compare_tensors(t1, t2):
@@ -585,7 +586,6 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 print(f"[INFO] Sending API request to Gemini")
 
                 start_time = time.time()
-                timeout = 30
 
                 def api_call():
                     last_api_exception = None
