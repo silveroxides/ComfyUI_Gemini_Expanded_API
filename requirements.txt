@@ -1,4 +1,4 @@
-google-genai>=1.40.0
+google-genai>=1.51.0
 numpy
 torch
 Pillow

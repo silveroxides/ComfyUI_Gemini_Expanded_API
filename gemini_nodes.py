@@ -188,7 +188,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "config": ("GEMINI_CONFIG",),
                 "prompt": (IO.STRING, {"multiline": True}),
                 "system_instruction": (IO.STRING, {"default": "You are a helpful AI assistant.", "multiline": True}),
-                "model": (["gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash-image-preview"], {"default": "gemini-2.0-flash"}),
+                "model": (["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], {"default": "gemini-2.0-flash"}),
                 "temperature": (IO.FLOAT, {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_p": (IO.FLOAT, {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
@@ -207,6 +207,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "use_seed": (IO.BOOLEAN, {"default": True}),
                 "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647, "control_after_generate": True}),
                 "timeout": (IO.INT, {"default": 30, "min": 15, "max": 300, "step": 15}),
+                "thinking_mode": (["Default", "low", "thoughts"], {"default": "Default", "tooltip": "New modes for 3.0. 'low' sets model to low thinking mode and 'thoughts' shows thoughts in response. Not fully implemented"}),
             }
         }
 
@@ -275,7 +276,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
     def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
                 aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None, use_proxy=False,
-                proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30):
+                proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30, thinking_mode="Default"):
 
         # Helper for comparing optional tensors
         def compare_tensors(t1, t2):
@@ -314,7 +315,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
         original_https_proxy_lower = os.environ.get('https_proxy')
-        thinking_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17"]
+        thinking_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
 
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
 
@@ -522,7 +523,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     ),
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
-            elif model in thinking_models:
+            elif model in thinking_models and thinking_mode == "Default":
                 generate_content_config = types.GenerateContentConfig(
                     temperature=temperature,
                     top_p=top_p,
@@ -546,6 +547,63 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     )],
                     thinking_config = types.ThinkingConfig(
                         thinking_budget=thinking_budget,
+                    ),
+                    response_modalities=response_modalities,
+                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+                )
+            elif model in thinking_models and thinking_mode == "thoughts":
+                generate_content_config = types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_output_tokens=max_output_tokens,
+                    safety_settings=[types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
+                        threshold="BLOCK_NONE"
+                    )],
+                    thinking_config = types.ThinkingConfig(
+                        include_thoughts=True,
+                        thinking_budget=thinking_budget,
+                    ),
+                    response_modalities=response_modalities,
+                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+                )
+            elif model in thinking_models and thinking_mode == "low":
+                generate_content_config = types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    max_output_tokens=max_output_tokens,
+                    safety_settings=[types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),types.SafetySetting(
+                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
+                        threshold="BLOCK_NONE"
+                    )],
+                    thinking_config = types.ThinkingConfig(
+                        thinking_level="LOW",
                     ),
                     response_modalities=response_modalities,
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
