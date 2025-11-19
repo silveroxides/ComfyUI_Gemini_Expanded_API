@@ -4,6 +4,7 @@ import uuid
 import re
 import torch
 import numpy as np
+import cv2
 from PIL import Image
 import io
 import folder_paths
@@ -207,7 +208,9 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                 "use_seed": (IO.BOOLEAN, {"default": True}),
                 "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647, "control_after_generate": True}),
                 "timeout": (IO.INT, {"default": 30, "min": 15, "max": 300, "step": 15}),
-                "thinking_mode": (["Default", "low", "thoughts"], {"default": "Default", "tooltip": "New modes for 3.0. 'low' sets model to low thinking mode and 'thoughts' shows thoughts in response. Not fully implemented"}),
+                "include_thoughts": (IO.BOOLEAN, {"default": False}),
+                "thinking_level": (["None", "low", "medium", "high"], {"tooltip": "Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."}),
+                "media_resolution": (["unspecified", "low", "medium", "high"], {"tooltip": "Set input media resolution for image, video and pdf. This changes tokens consumed."}),
             }
         }
 
@@ -274,9 +277,10 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         tensor = torch.from_numpy(empty_image).unsqueeze(0)
         return tensor
 
-    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens, include_images,
-                aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None, use_proxy=False,
-                proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30, thinking_mode="Default"):
+    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+        include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
+        use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
+        include_thoughts=False, thinking_level=None, media_resolution=None):
 
         # Helper for comparing optional tensors
         def compare_tensors(t1, t2):
@@ -316,6 +320,8 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         original_http_proxy_lower = os.environ.get('http_proxy')
         original_https_proxy_lower = os.environ.get('https_proxy')
         thinking_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
+        media_res_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
+        thinking_levels = ["low", "medium", "high"]
 
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
 
@@ -477,7 +483,10 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
 
-                        img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
+                        if model in media_res_models and media_resolution is not None:
+                            img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}, "media_resolution": {"level": f"MEDIA_RESOLUTION_{media_resolution.upper()}"}}
+                        else:
+                            img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
                         img_parts.append(img_part)
 
                     contents = img_parts + [{"text": padded_prompt}]
@@ -523,7 +532,7 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                     ),
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
-            elif model in thinking_models and thinking_mode == "Default":
+            elif model == "gemini-3-pro-preview" and thinking_level in thinking_levels:
                 generate_content_config = types.GenerateContentConfig(
                     temperature=temperature,
                     top_p=top_p,
@@ -546,12 +555,13 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         threshold="BLOCK_NONE"
                     )],
                     thinking_config = types.ThinkingConfig(
-                        thinking_budget=thinking_budget,
+                        include_thoughts=include_thoughts,
+                        thinking_level=thinking_level,
                     ),
                     response_modalities=response_modalities,
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
                 )
-            elif model in thinking_models and thinking_mode == "thoughts":
+            elif model in thinking_models:
                 generate_content_config = types.GenerateContentConfig(
                     temperature=temperature,
                     top_p=top_p,
@@ -574,36 +584,8 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
                         threshold="BLOCK_NONE"
                     )],
                     thinking_config = types.ThinkingConfig(
-                        include_thoughts=True,
+                        include_thoughts=include_thoughts,
                         thinking_budget=thinking_budget,
-                    ),
-                    response_modalities=response_modalities,
-                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
-                )
-            elif model in thinking_models and thinking_mode == "low":
-                generate_content_config = types.GenerateContentConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    max_output_tokens=max_output_tokens,
-                    safety_settings=[types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
-                        threshold="BLOCK_NONE"
-                    )],
-                    thinking_config = types.ThinkingConfig(
-                        thinking_level="LOW",
                     ),
                     response_modalities=response_modalities,
                     system_instruction=[types.Part.from_text(text=padded_system_instruction)],
