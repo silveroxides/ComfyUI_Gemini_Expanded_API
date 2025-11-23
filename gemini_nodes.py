@@ -185,7 +185,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
             outputs=[
                 io.String.Output("text"),
                 io.Image.Output("image"),
-                io.Int.Output("seed")
+                io.Int.Output("final_actual_seed")
             ]
         )
 
