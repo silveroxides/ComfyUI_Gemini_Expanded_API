@@ -6,9 +6,9 @@ import torch
 import numpy as np
 import cv2
 from PIL import Image
-import io
-import folder_paths
-from comfy.comfy_types.node_typing import IO, ComfyNodeABC, InputTypeDict
+import io as stdlib_io
+import folder_paths  # type: ignore[reportMissingImports]
+from comfy_api.latest import ComfyExtension, io, ui  # type: ignore[reportMissingImports]
 from google import genai
 from google.genai import types
 import time
@@ -19,6 +19,8 @@ import sys
 import importlib
 import subprocess
 import random
+import hashlib
+from typing import Any, Tuple
 
 def check_and_install_dependencies():
     required_packages = {
@@ -42,41 +44,26 @@ try:
 except Exception as e:
     print(f"[WARNING] Error checking dependencies: {str(e)}")
 
-class GetKeyAPI(ComfyNodeABC):
+class GetKeyAPI(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls) -> InputTypeDict:
-        return {
-            "required": {
-                "json_path": (IO.STRING, {"default": "./input/apikeys.json", "multiline": False, "tooltip": "Path to a .json file with simple top level structure with name as key and api-key as value. See example in custom node folder."}),
-                "key_id_method": (["custom", "random_rotate", "increment_rotate"], {"default": "custom", "tooltip": "custom sets api-key to the api-key with the name set in the key_id widget. random_rotate randomly switches between keys if multiple in the .json and increment_rotate does it in order from first to last, then repeats."}),
-                "rotation_interval": (IO.INT, {"default": 0, "min": 0, "tooltip": "how many steps to jump when doing rotate."}),
-            },
-            "optional": {
-                "key_id": (IO.STRING, {"default": "placeholder", "multiline": False, "tooltip": "Put name of key in the .json here if using custom in key_id_method."}),
-            }
-        }
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="GetKeyAPI",
+            display_name="Get API Key from JSON",
+            category="utils/api_keys",
+            inputs=[
+                io.String.Input("json_path", default="./input/apikeys.json", multiline=False, tooltip="Path to a .json file with simple top level structure with name as key and api-key as value. See example in custom node folder."),
+                io.Combo.Input("key_id_method", options=["custom", "random_rotate", "increment_rotate"], default="custom", tooltip="custom sets api-key to the api-key with the name set in the key_id widget. random_rotate randomly switches between keys if multiple in the .json and increment_rotate does it in order from first to last, then repeats."),
+                io.Int.Input("rotation_interval", default=0, min=0, tooltip="how many steps to jump when doing rotate."),
+                io.String.Input("key_id", default="placeholder", multiline=False, optional=True, tooltip="Put name of key in the .json here if using custom in key_id_method."),
+            ],
+            outputs=[
+                io.String.Output("API_KEY")
+            ]
+        )
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("API_KEY",)
-    FUNCTION = "getapikey"
-    CATEGORY = "utils/api_keys"
-
-    def getapikey(self, json_path, key_id_method, rotation_interval, key_id="placeholder"):
-        """
-        Loads API keys from a JSON file (top-level dictionary)
-        and selects one based on the specified method.
-
-        Args:
-            json_path (str): Path to the JSON file. Expected format:
-                             {"key_id_1": "api_key_value_1", "key_id_2": "api_key_value_2", ...}
-            key_id_method (str): Method to select the key ('custom', 'random_rotate', 'increment_rotate').
-            rotation_interval (int): Used as index for 'increment_rotate'.
-            key_id (str, optional): ID (key name) of the key to select if key_id_method is 'custom'. Defaults to "placeholder".
-
-        Returns:
-            str: The selected API key string.
-            Raises: ValueError or RuntimeError if unable to find or select a key.
-        """
+    @classmethod
+    def execute(cls, json_path: str, key_id_method: str, rotation_interval: int, key_id: str | None = "placeholder") -> io.NodeOutput:
         api_keys_data = None
         absolute_json_path = os.path.abspath(json_path)
 
@@ -128,110 +115,108 @@ class GetKeyAPI(ComfyNodeABC):
         if not isinstance(selected_key_value, str) or not selected_key_value:
              raise ValueError(f"RotateKeyAPI Error: Retrieved value for selected key is not a valid string. Value: {selected_key_value}")
 
-
         print(f"RotateKeyAPI: Successfully retrieved API key using method '{key_id_method}'.")
-        return (selected_key_value,)
+        return io.NodeOutput(selected_key_value)
 
 
 
-class SSL_GeminiAPIKeyConfig(ComfyNodeABC):
+class SSL_GeminiAPIKeyConfig(io.ComfyNode):
+    GemConfig = io.Custom("GEMINI_CONFIG")
+
     @classmethod
-    def INPUT_TYPES(cls) -> InputTypeDict:
-        return {
-            "required": {
-                "api_key": (IO.STRING, {"multiline": False}),
-                "api_version": (["v1", "v1alpha", "v1beta", "v2beta"], {"default": "v1alpha"}),
-                "vertexai": (IO.BOOLEAN, {"default": False}),
-            },
-            "optional": {
-                "vertexai_project": (IO.STRING, {"default": "placeholder", "multiline": False}),
-                "vertexai_location": (IO.STRING, {"default": "placeholder", "multiline": False}),
-            }
-        }
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="SSL_GeminiAPIKeyConfig",
+            display_name="Configure Gemini API Key",
+            category="API/Gemini",
+            inputs=[
+                io.String.Input("api_key", multiline=False),
+                io.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v2beta"], default="v1alpha"),
+                io.Boolean.Input("vertexai", default=False),
+                io.String.Input("vertexai_project", default="placeholder", optional=True),
+                io.String.Input("vertexai_location", default="placeholder", optional=True),
+            ],
+            outputs=[
+                cls.GemConfig.Output("config")
+            ]
+        )
 
-    RETURN_TYPES = ("GEMINI_CONFIG",)
-    RETURN_NAMES = ("config",)
-    FUNCTION = "configure"
-    CATEGORY = "API/Gemini"
-
-    def configure(self, api_key, api_version, vertexai, vertexai_project, vertexai_location):
+    @classmethod
+    def execute(cls, api_key: str, api_version: str, vertexai: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> io.NodeOutput:
         config = {"api_key": api_key, "api_version": api_version, "vertexai": vertexai, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
-        return (config,)
+        return io.NodeOutput(config)
 
 
-class SSL_GeminiTextPrompt(ComfyNodeABC):
-    def __init__(self):
-        super().__init__()
-        # Initialize cache state
-        self.last_input_seed = None
-        self.last_actual_seed = None
-        self.last_text_output = None
-        self.last_image_tensor = None
-        self.last_config = None
-        self.last_prompt = None
-        self.last_system_instruction = None
-        self.last_model = None
-        self.last_temperature = None
-        self.last_top_p = None
-        self.last_top_k = None
-        self.last_max_output_tokens = None
-        self.last_include_images = None
-        self.last_aspect_ratio = None
-        self.last_bypass_mode = None
-        self.last_thinking_budget = None
-        self.last_input_image = None
-        self.last_input_image_2 = None
+
+class SSL_GeminiTextPrompt(io.ComfyNode):
+    GemConfig = io.Custom("GEMINI_CONFIG")
+    _cache: dict = {}
+
+    # Define model lists centrally to ensure consistency between cache logic and execution logic
+    THINKING_MODELS = [
+        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
+        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
+        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-09-2025",
+        "gemini-3-pro-preview"
+    ]
+    IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-3-pro-image-preview"]
+    MEDIA_RES_MODELS = [
+        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
+        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
+        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
+        "gemini-3-pro-preview"
+    ]
 
     @classmethod
-    def INPUT_TYPES(cls) -> InputTypeDict:
-        return {
-            "required": {
-                "config": ("GEMINI_CONFIG",),
-                "prompt": (IO.STRING, {"multiline": True}),
-                "system_instruction": (IO.STRING, {"default": "You are a helpful AI assistant.", "multiline": True}),
-                "model": (["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], {"default": "gemini-2.0-flash"}),
-                "temperature": (IO.FLOAT, {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "top_p": (IO.FLOAT, {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "top_k": (IO.INT, {"default": 40, "min": 1, "max": 100, "step": 1}),
-                "max_output_tokens": (IO.INT, {"default": 8192, "min": 1, "max": 65536, "step": 1}),
-                "include_images": (IO.BOOLEAN, {"default": False}),
-                "aspect_ratio": (["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], {"default": "None"}),
-                "bypass_mode": (["None", "system_instruction", "prompt", "both"], {"default": "None"}),
-                "thinking_budget": (IO.INT, {"default": 0, "min": -1, "max": 24576, "step": 1, "tooltip": "0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"}),
-            },
-            "optional": {
-                "input_image": (IO.IMAGE,),
-                "input_image_2": (IO.IMAGE,),
-                "use_proxy": (IO.BOOLEAN, {"default": False}),
-                "proxy_host": (IO.STRING, {"default": "127.0.0.1"}),
-                "proxy_port": (IO.INT, {"default": 7890, "min": 1, "max": 65535}),
-                "use_seed": (IO.BOOLEAN, {"default": True}),
-                "seed": (IO.INT, {"default": 0, "min": 0, "max": 2147483647, "control_after_generate": True}),
-                "timeout": (IO.INT, {"default": 30, "min": 15, "max": 300, "step": 15}),
-                "include_thoughts": (IO.BOOLEAN, {"default": False}),
-                "thinking_level": (["None", "low", "medium", "high"], {"tooltip": "Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."}),
-                "media_resolution": (["unspecified", "low", "medium", "high"], {"tooltip": "Set input media resolution for image, video and pdf. This changes tokens consumed."}),
-            }
-        }
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="SSL_GeminiTextPrompt",
+            display_name="Expanded Gemini Text/Image",
+            category="API/Gemini",
+            inputs=[
+                cls.GemConfig.Input("config"),
+                io.String.Input("prompt", multiline=True),
+                io.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
+                io.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
+                io.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("top_k", default=40, min=1, max=100, step=1),
+                io.Int.Input("max_output_tokens", default=8192, min=1, max=65536, step=1),
+                io.Boolean.Input("include_images", default=False),
+                io.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], default="None"),
+                io.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
+                io.Int.Input("thinking_budget", default=0, min=-1, max=24576, step=1, tooltip="0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"),
+                io.Image.Input("input_image", optional=True),
+                io.Image.Input("input_image_2", optional=True),
+                io.Boolean.Input("use_proxy", default=False),
+                io.String.Input("proxy_host", default="127.0.0.1"),
+                io.Int.Input("proxy_port", default=7890, min=1, max=65535),
+                io.Boolean.Input("use_seed", default=True),
+                io.Int.Input("seed", default=0, min=0, max=2147483647),
+                io.Int.Input("timeout", default=30, min=15, max=300, step=15),
+                io.Boolean.Input("include_thoughts", default=False),
+                io.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."),
+                io.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
+            ],
+            outputs=[
+                io.String.Output("text"),
+                io.Image.Output("image"),
+                io.Int.Output("final_actual_seed")
+            ]
+        )
 
-    RETURN_TYPES = ("STRING", "IMAGE", "INT")
-    RETURN_NAMES = ("text", "image", "seed")
-    FUNCTION = "generate"
-    CATEGORY = "API/Gemini"
-
-    def _pad_text_with_joiners(self, text: str) -> str:
+    @classmethod
+    def _pad_text_with_joiners(cls, text: str) -> str:
         if not text:
             return ""
 
-
-        # Build the pattern using an f-string to correctly embed the unicode char.
-        # This is not a raw string.
         patternperiod = r"\."
         patternspace = r"\s"
         patterncomma = r","
         patterndash = r"\-"
         patternsingq = r"\'"
-        patterndoubq = r"\""
+        patterndoubq = r'\"'
         patternword = r"(.)(?=.)"
 
         replperiod = r"。"
@@ -254,7 +239,8 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
         return joined_textfinal
 
-    def save_binary_file(self, data, mime_type):
+    @classmethod
+    def save_binary_file(cls, data, mime_type):
         ext = ".bin"
         if mime_type == "image/png":
             ext = ".png"
@@ -272,72 +258,95 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
 
         return file_name
 
-    def generate_empty_image(self, width=64, height=64):
+    @classmethod
+    def generate_empty_image(cls, width=64, height=64):
         empty_image = np.ones((height, width, 3), dtype=np.float32) * 0.2
         tensor = torch.from_numpy(empty_image).unsqueeze(0)
         return tensor
 
-    def generate(self, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
-        include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
-        use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
-        include_thoughts=False, thinking_level=None, media_resolution=None):
+    @classmethod
+    def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+                                             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
+                                             input_image=None, input_image_2=None,
+                                             use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
+                                             include_thoughts=False, thinking_level=None, media_resolution=None):
 
-        # Helper for comparing optional tensors
-        def compare_tensors(t1, t2):
-            if t1 is None and t2 is None:
-                return True
-            if t1 is not None and t2 is not None:
-                return torch.equal(t1, t2)
-            return False
+        # 1. Hashing Images
+        def get_tensor_hash(tensor):
+            if tensor is None:
+                return "None"
+            try:
+                return hashlib.sha256(np.ascontiguousarray(tensor.cpu().numpy()).tobytes()).hexdigest()
+            except Exception as e:
+                print(f"[WARNING] Cache hashing failed for image: {e}")
+                return "Error"
 
-        # Comprehensive cache check
-        is_cached = (
-            use_seed and
-            self.last_image_tensor is not None and
-            self.last_input_seed == seed and
-            self.last_config == config and
-            self.last_prompt == prompt and
-            self.last_system_instruction == system_instruction and
-            self.last_model == model and
-            self.last_temperature == temperature and
-            self.last_top_p == top_p and
-            self.last_top_k == top_k and
-            self.last_max_output_tokens == max_output_tokens and
-            self.last_include_images == include_images and
-            self.last_aspect_ratio == aspect_ratio and
-            self.last_bypass_mode == bypass_mode and
-            self.last_thinking_budget == thinking_budget and
-            compare_tensors(self.last_input_image, input_image) and
-            compare_tensors(self.last_input_image_2, input_image_2)
+        image_1_hash = get_tensor_hash(input_image)
+        image_2_hash = get_tensor_hash(input_image_2)
+
+        # 2. Determine Effective Parameters based on Model
+        # This ensures we don't cache-miss if an irrelevant parameter changes
+
+        # Defaults
+        eff_include_images = False
+        eff_aspect_ratio = "None"
+        eff_thinking_level = "None"
+        eff_thinking_budget = -1
+        eff_include_thoughts = False
+
+        # Logic mirroring _build_generate_content_config exactly
+        if include_images and model in cls.IMAGE_MODELS:
+            eff_include_images = True
+            eff_aspect_ratio = str(aspect_ratio)
+            # When generating images, thinking params are ignored
+
+        elif model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
+            eff_thinking_level = thinking_level
+            eff_include_thoughts = include_thoughts
+            # Budget is ignored in this specific branch
+
+        elif model in cls.THINKING_MODELS:
+            eff_thinking_budget = int(thinking_budget)
+            eff_include_thoughts = include_thoughts
+            # Thinking level is ignored in this branch
+
+        # If none of the above, all effective thinking/image params remain default/ignored
+
+        fingerprint = (
+            str(config),
+            prompt,
+            system_instruction,
+            model,
+            float(temperature),
+            float(top_p),
+            int(top_k),
+            int(max_output_tokens),
+            eff_include_images,    # EFFECTIVE include_images
+            eff_aspect_ratio,      # EFFECTIVE aspect_ratio
+            str(bypass_mode),
+            eff_thinking_budget,   # EFFECTIVE thinking_budget
+            use_seed,
+            int(seed) if use_seed else 0, # Only use seed in cache if use_seed is True
+            image_1_hash,
+            image_2_hash,
+            bool(use_proxy),
+            str(proxy_host),
+            int(proxy_port),
+            int(timeout),
+            eff_include_thoughts, # EFFECTIVE include_thoughts
+            eff_thinking_level,   # EFFECTIVE thinking_level
+            str(media_resolution)
         )
 
-        if is_cached:
-            print(f"[INFO] All inputs match the previous run with seed ({seed}). Returning cached result.")
-            return (self.last_text_output, self.last_image_tensor, self.last_actual_seed)
+        cached = cls._cache.get(fingerprint)
+        if use_seed and cached is not None:
+            return fingerprint, cached
+        return fingerprint, None
 
-        original_http_proxy = os.environ.get('HTTP_PROXY')
-        original_https_proxy = os.environ.get('HTTPS_PROXY')
-        original_http_proxy_lower = os.environ.get('http_proxy')
-        original_https_proxy_lower = os.environ.get('https_proxy')
-        thinking_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
-        media_res_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
-        thinking_levels = ["low", "medium", "high"]
-
-        print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
-
-        # Pad text based on bypass_mode
-        padded_prompt = prompt
-        padded_system_instruction = system_instruction
-
-        if bypass_mode == "prompt" or bypass_mode == "both":
-            padded_prompt = self._pad_text_with_joiners(prompt)
-            print(padded_prompt)
-        if bypass_mode == "system_instruction" or bypass_mode == "both":
-            padded_system_instruction = self._pad_text_with_joiners(system_instruction)
-            print(padded_system_instruction)
-
+    @classmethod
+    def _handle_seed(cls, use_seed, seed):
         actual_seed = None
-        if use_seed == True:
+        if use_seed:
             if seed == 0:
                 current_time = int(time.time() * 1000)
                 random_component = random.randint(0, 1000000)
@@ -355,115 +364,203 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
         else:
             print("[INFO] Seed not used")
 
+        return actual_seed
+
+    @classmethod
+    def _setup_proxy_env(cls, proxy_host, proxy_port):
+        if not proxy_host.startswith(('http://', 'https://')):
+            proxy_url = f"http://{proxy_host}:{proxy_port}"
+        else:
+            proxy_url = f"{proxy_host}:{proxy_port}"
+
+        os.environ['HTTP_PROXY'] = proxy_url
+        os.environ['HTTPS_PROXY'] = proxy_url
+        os.environ['http_proxy'] = proxy_url
+        os.environ['https_proxy'] = proxy_url
+        os.environ['REQUESTS_CA_BUNDLE'] = ''
+
+        print(f"[INFO] Proxy enabled: {proxy_url}")
+        return proxy_url
+
+    @classmethod
+    def _build_generate_content_config(cls, model, temperature, top_p, top_k, max_output_tokens, seed,
+                                       include_images, response_modalities, aspect_ratio, padded_system_instruction,
+                                       thinking_level, thinking_budget, include_thoughts, media_resolution):
+        # Centralized builder for GenerateContentConfig used by different model/feature branches
+        safety = [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),  # type: ignore
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),  # type: ignore
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),  # type: ignore
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),  # type: ignore
+            types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),  # type: ignore
+        ]
+
+        # Modified: Only trigger image config if include_images is True AND the model is actually an image model
+        if include_images and model in cls.IMAGE_MODELS:
+            return types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=seed,
+                max_output_tokens=max_output_tokens,
+                safety_settings=safety,
+                response_modalities=response_modalities,
+                image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+            )
+
+        # Modified: Added check for thinking_level != "None"
+        if model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
+            return types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_output_tokens=max_output_tokens,
+                safety_settings=safety,
+                thinking_config=types.ThinkingConfig(include_thoughts=include_thoughts, thinking_level=thinking_level),
+                response_modalities=response_modalities,
+                system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+            )
+
+        if model in cls.THINKING_MODELS:
+            return types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_output_tokens=max_output_tokens,
+                safety_settings=safety,
+                thinking_config=types.ThinkingConfig(include_thoughts=include_thoughts, thinking_budget=thinking_budget),
+                response_modalities=response_modalities,
+                system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+            )
+
+        return types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_output_tokens=max_output_tokens,
+            safety_settings=safety,
+            response_modalities=response_modalities,
+            system_instruction=[types.Part.from_text(text=padded_system_instruction)],
+        )
+
+    @classmethod
+    def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+                include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
+                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
+                include_thoughts=False, thinking_level=None, media_resolution=None) -> io.NodeOutput:
+
+        fingerprint, cached = cls._compute_fingerprint_and_check_cache(
+            config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+            include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
+            input_image, input_image_2,
+            use_proxy, proxy_host, proxy_port, timeout,
+            include_thoughts, thinking_level, media_resolution
+        )
+
+        if cached is not None:
+            cached_text, cached_image, cached_seed = cached
+            print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
+            return io.NodeOutput(cached_text, cached_image, cached_seed)
+
+        # --- keep most of the original implementation but converted to classmethod usage ---
+        original_http_proxy = os.environ.get('HTTP_PROXY')
+        original_https_proxy = os.environ.get('HTTPS_PROXY')
+        original_http_proxy_lower = os.environ.get('http_proxy')
+        original_https_proxy_lower = os.environ.get('https_proxy')
+
+        print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
+
+        padded_prompt = prompt
+        padded_system_instruction = system_instruction
+
+        if bypass_mode == "prompt" or bypass_mode == "both":
+            padded_prompt = cls._pad_text_with_joiners(prompt)
+            print(padded_prompt)
+        if bypass_mode == "system_instruction" or bypass_mode == "both":
+            padded_system_instruction = cls._pad_text_with_joiners(system_instruction)
+            print(padded_system_instruction)
+
+        actual_seed = cls._handle_seed(use_seed, seed)
+
+        # Flatten and simplify nested try/except blocks to ensure correct pairing
+        original_http_proxy = os.environ.get('HTTP_PROXY')
+        original_https_proxy = os.environ.get('HTTPS_PROXY')
+        original_http_proxy_lower = os.environ.get('http_proxy')
+        original_https_proxy_lower = os.environ.get('https_proxy')
+
+        text_output = ""
+        image_tensor = cls.generate_empty_image()
+        network_ok = True
+        proxy_url: str | None = None
+
         try:
-            if use_proxy == True:
-                if not proxy_host.startswith(('http://', 'https://')):
-                    proxy_url = f"http://{proxy_host}:{proxy_port}"
-                else:
-                    proxy_url = f"{proxy_host}:{proxy_port}"
+            if use_proxy:
+                proxy_url = cls._setup_proxy_env(proxy_host, proxy_port)
 
-                os.environ['HTTP_PROXY'] = proxy_url
-                os.environ['HTTPS_PROXY'] = proxy_url
-                os.environ['http_proxy'] = proxy_url
-                os.environ['https_proxy'] = proxy_url
-                os.environ['REQUESTS_CA_BUNDLE'] = ''
+            # Initialize Gemini client
+            client_options = {}
+            if use_proxy:
+                try:
+                    import google.api_core.http_client  # type: ignore[import]
+                    import google.auth.transport.requests  # type: ignore[import]
+                    import requests
+                    from requests.adapters import HTTPAdapter
 
-                print(f"[INFO] Proxy enabled: {proxy_url}")
+                    class ProxyAdapter(HTTPAdapter):
+                        def __init__(self, proxy_url, **kwargs):
+                            self.proxy_url = proxy_url
+                            super().__init__(**kwargs)
 
-            print(f"[INFO] Initializing Gemini client")
+                        def add_headers(self, request, **kwargs):
+                            super().add_headers(request, **kwargs)
+
+                    session = requests.Session()
+                    proxies = {"http": str(proxy_url), "https": str(proxy_url)}
+                    session.proxies.update(proxies)
+                    adapter = ProxyAdapter(proxy_url, max_retries=1)
+                    session.mount('http://', adapter)
+                    session.mount('https://', adapter)
+                    session.verify = False
+                    http_client = google.api_core.http_client.RequestsHttpClient(session=session)
+                    client_options["http_client"] = http_client
+                except Exception:
+                    # best-effort proxy HTTP client setup; fall back if imports fail
+                    pass
+
             try:
-                client_options = {}
-
-                if use_proxy == True:
-                    try:
-                        import google.api_core.http_client
-                        import google.auth.transport.requests
-
-                        try:
-                            import requests
-                            from requests.adapters import HTTPAdapter
-
-                            class ProxyAdapter(HTTPAdapter):
-                                def __init__(self, proxy_url, **kwargs):
-                                    self.proxy_url = proxy_url
-                                    super().__init__(**kwargs)
-
-                                def add_headers(self, request, **kwargs):
-                                    super().add_headers(request, **kwargs)
-
-                            session = requests.Session()
-                            proxies = {
-                                "http": proxy_url,
-                                "https": proxy_url
-                            }
-                            session.proxies.update(proxies)
-
-                            adapter = ProxyAdapter(proxy_url, max_retries=1)
-                            session.mount('http://', adapter)
-                            session.mount('https://', adapter)
-
-                            session.verify = False
-
-                            http_client = google.api_core.http_client.RequestsHttpClient(session=session)
-                            client_options["http_client"] = http_client
-
-                            print(f"[INFO] Used requests library to set proxy for HTTP client")
-                        except Exception as proxy_error:
-                            print(f"[WARNING] Failed to set HTTP client proxy: {str(proxy_error)}")
-                    except ImportError as e:
-                        print(f"[WARNING] Failed to import Google API HTTP client library: {str(e)}")
-                vertexai = config["vertexai"]
-                if vertexai == True:
-                    project = config["vertexai_project"]
-                    location = config["vertexai_location"]
-                    client = genai.Client(vertexai=vertexai, project=project, location=location, http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
+                vertexai = config.get("vertexai", False)
+                if vertexai:
+                    project = config.get("vertexai_project")
+                    location = config.get("vertexai_location")
+                    client = genai.Client(vertexai=vertexai, project=project, location=location, http_options=types.HttpOptions(api_version=config.get("api_version")), **client_options)  # type: ignore
                 else:
-                    client = genai.Client(api_key=config["api_key"], http_options=types.HttpOptions(api_version=config["api_version"]), **client_options)
-                print(f"[INFO] Gemini client initialized successfully")
+                    client = genai.Client(api_key=config.get("api_key"), http_options=types.HttpOptions(api_version=config.get("api_version")), **client_options)  # type: ignore
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
-                return (f"Gemini client initialization failed: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                return io.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
+            # Network test (best-effort)
             try:
                 import socket
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 test_socket.settimeout(5)
-
                 test_host = "generativelanguage.googleapis.com"
-
-                if use_proxy == True:
+                if use_proxy:
                     try:
-                        import socks
+                        import socks  # type: ignore[import]
                         test_socket = socks.socksocket()
                         test_socket.set_proxy(socks.HTTP, proxy_host, proxy_port)
                         test_socket.settimeout(5)
-                    except ImportError:
-                        print(f"[WARNING] PySocks library not installed, cannot test connection via proxy")
-
+                    except Exception:
+                        pass
                 test_socket.connect((test_host, 443))
                 test_socket.close()
                 network_ok = True
-            except Exception as e:
+            except Exception:
                 network_ok = False
-                print(f"[WARNING] Network connection test failed: {str(e)}")
 
-                if use_proxy == True:
-                    try:
-                        import subprocess
-                        cmd = f"curl -x {proxy_url} -s -o /dev/null -w '%{{http_code}}' https://{test_host}"
-                        try:
-                            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-                            if result.returncode == 0 and result.stdout.strip() in ['200', '301', '302']:
-                                network_ok = True
-                            else:
-                                print(f"[WARNING] curl proxy test failed, status code: {result.stdout.strip() if result.stdout else 'N/A'}")
-                        except Exception as curl_error:
-                            print(f"[WARNING] curl test failed: {str(curl_error)}")
-                    except ImportError:
-                        pass
-
-            contents = []
-
+            # Prepare contents (images + prompt)
             images_to_process = []
             if input_image is not None:
                 images_to_process.append(input_image)
@@ -473,322 +570,151 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
             if images_to_process:
                 try:
                     img_parts = []
-
                     for img in images_to_process:
                         img_array = img[0].cpu().numpy()
                         img_array = (img_array * 255).astype(np.uint8)
                         pil_img = Image.fromarray(img_array)
-
-                        img_byte_arr = io.BytesIO()
+                        img_byte_arr = stdlib_io.BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
-
-                        if model in media_res_models and media_resolution is not None:
+                        if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
                             img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}, "media_resolution": {"level": f"MEDIA_RESOLUTION_{media_resolution.upper()}"}}
                         else:
                             img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
                         img_parts.append(img_part)
-
                     contents = img_parts + [{"text": padded_prompt}]
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
-                    return (f"Error processing input image: {str(e)}", self.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                    return io.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             else:
                 contents = padded_prompt
 
-            if include_images == True:
-                response_modalities = ["IMAGE", "TEXT"]
-            else:
-                response_modalities = ["TEXT"]
+            # Logic Update: Only request IMAGE modality if include_images is TRUE AND it's the correct model
+            # Otherwise we stick to TEXT modality
+            response_modalities = ["IMAGE", "TEXT"] if (include_images and model in cls.IMAGE_MODELS) else ["TEXT"]
 
-            print(padded_prompt)
-            print(padded_system_instruction)
-            if include_images == True:
-                generate_content_config = types.GenerateContentConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    seed=seed,
-                    max_output_tokens=max_output_tokens,
-                    safety_settings=[types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
-                        threshold="BLOCK_NONE"
-                    )],
-                    response_modalities=response_modalities,
-                    image_config=types.ImageConfig(
-                        aspect_ratio=aspect_ratio,
-                    ),
-                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
-                )
-            elif model == "gemini-3-pro-preview" and thinking_level in thinking_levels:
-                generate_content_config = types.GenerateContentConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    max_output_tokens=max_output_tokens,
-                    safety_settings=[types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
-                        threshold="BLOCK_NONE"
-                    )],
-                    thinking_config = types.ThinkingConfig(
-                        include_thoughts=include_thoughts,
-                        thinking_level=thinking_level,
-                    ),
-                    response_modalities=response_modalities,
-                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
-                )
-            elif model in thinking_models:
-                generate_content_config = types.GenerateContentConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    max_output_tokens=max_output_tokens,
-                    safety_settings=[types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
-                        threshold="BLOCK_NONE"
-                    )],
-                    thinking_config = types.ThinkingConfig(
-                        include_thoughts=include_thoughts,
-                        thinking_budget=thinking_budget,
-                    ),
-                    response_modalities=response_modalities,
-                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
-                )
-            else:
-                generate_content_config = types.GenerateContentConfig(
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    max_output_tokens=max_output_tokens,
-                    safety_settings=[types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),types.SafetySetting(
-                        category="HARM_CATEGORY_CIVIC_INTEGRITY",
-                        threshold="BLOCK_NONE"
-                    )],
-                    response_modalities=response_modalities,
-                    system_instruction=[types.Part.from_text(text=padded_system_instruction)],
-                )
+            generate_content_config = cls._build_generate_content_config(
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_output_tokens=max_output_tokens,
+                seed=seed,
+                include_images=include_images,
+                response_modalities=response_modalities,
+                aspect_ratio=aspect_ratio,
+                padded_system_instruction=padded_system_instruction,
+                thinking_level=thinking_level,
+                thinking_budget=thinking_budget,
+                include_thoughts=include_thoughts,
+                media_resolution=media_resolution,
+            )
 
-            if use_seed == True and actual_seed is not None:
+            if use_seed and actual_seed is not None:
                 try:
                     generate_content_config.seed = actual_seed
-                except Exception as seed_error:
-                    print(f"[WARNING] Failed to set seed for API request: {str(seed_error)}")
+                except Exception:
+                    pass
 
-            try:
-                print(f"[INFO] Sending API request to Gemini")
+            # API call in background thread
+            start_time = time.time()
+            result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
 
-                start_time = time.time()
-
-                def api_call():
-                    last_api_exception = None
-                    max_retries = 1
-                    api_response = None
-
-                    for attempt in range(max_retries):
-                        try:
-                            print(f"[INFO] API call attempt {attempt + 1}/{max_retries}")
-
-                            if use_seed and actual_seed is not None:
-                                current_seed_for_api_call = actual_seed + attempt
-                                try:
-                                    generate_content_config.seed = current_seed_for_api_call
-                                    if attempt > 0:
-                                        print(f"[INFO] Retrying with incremented seed: {current_seed_for_api_call}")
-                                except AttributeError:
-                                    print(f"[WARNING] Could not set 'seed' attribute on generate_content_config.")
-                                except Exception as e_set_seed:
-                                    print(f"[WARNING] Error setting seed {current_seed_for_api_call} for attempt {attempt + 1}: {str(e_set_seed)}")
-
-                            response = client.models.generate_content(
-                                model=model,
-                                contents=contents,
-                                config=generate_content_config,
-                            )
-                            print(f"[INFO] Received API response for attempt {attempt + 1}")
-
-                            # --- START OF CORRECTED CODE ---
-                            # This is the robust validation check. It verifies that the necessary parts of the
-                            # response exist and are not None before proceeding.
-                            if not (response.candidates and response.candidates[0].content and response.candidates[0].content.parts):
-                                finish_reason = "UNKNOWN"
-                                if response.candidates and hasattr(response.candidates[0], 'finish_reason'):
-                                    # Get the reason if available (e.g., SAFETY, RECITATION, etc.)
-                                    finish_reason = response.candidates[0].finish_reason.name
-
-                                # Raise a specific error that will be caught by the except block below,
-                                # forcing a retry. This now correctly handles blocked/empty responses.
-                                raise ValueError(f"Response was empty or blocked (Finish Reason: {finish_reason}).")
-                            # --- END OF CORRECTED CODE ---
-
-                            api_response = response
-                            break  # Success! Exit the retry loop.
-
-                        except Exception as e:
-                            last_api_exception = e
-                            print(f"[ERROR] API call attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-                            if attempt < max_retries - 1:
-                                wait_time = 2**attempt
-                                print(f"[INFO] Waiting {wait_time}s before next attempt...")
-                                time.sleep(wait_time)
-
-                    if api_response is None:
-                        print(f"[ERROR] All {max_retries} API call attempts failed. Last error: {str(last_api_exception)}")
-                        result_queue.put(("error", last_api_exception))
-                        return
-
+            def api_call():
+                last_api_exception = None
+                api_response = None
+                max_retries = 1
+                for attempt in range(max_retries):
                     try:
-                        current_text_output = ""
-                        current_image_tensor = None
-
-                        for part in api_response.candidates[0].content.parts:
+                        if use_seed and actual_seed is not None:
+                            try:
+                                generate_content_config.seed = actual_seed + attempt
+                            except Exception:
+                                pass
+                        response = client.models.generate_content(model=model, contents=contents, config=generate_content_config)
+                        if not (response.candidates and getattr(response.candidates[0].content, 'parts', None)):
+                            finish_reason = "UNKNOWN"
+                            if response.candidates:
+                                fr = getattr(response.candidates[0], 'finish_reason', None)
+                                if fr is not None and hasattr(fr, 'name'):
+                                    finish_reason = fr.name
+                            raise ValueError(f"Response was empty or blocked (Finish Reason: {finish_reason}).")
+                        api_response = response
+                        break
+                    except Exception as e:
+                        last_api_exception = e
+                if api_response is None:
+                    result_queue.put(("error", last_api_exception))
+                    return
+                try:
+                    current_text_output = ""
+                    current_image_tensor = None
+                    parts = None
+                    if api_response.candidates:
+                        parts = getattr(api_response.candidates[0].content, 'parts', None)
+                    if parts:
+                        for part in parts:
                             if hasattr(part, 'text') and part.text is not None:
                                 current_text_output += part.text
-
                             elif hasattr(part, 'inline_data') and part.inline_data is not None:
                                 try:
                                     inline_data = part.inline_data
                                     mime_type = inline_data.mime_type
                                     data = inline_data.data
-
-                                    image_path = self.save_binary_file(data, mime_type)
+                                    image_path = cls.save_binary_file(data, mime_type)
                                     img = Image.open(image_path)
-
                                     if img.mode != 'RGB':
                                         img = img.convert('RGB')
-
                                     img_array = np.array(img).astype(np.float32) / 255.0
                                     current_image_tensor = torch.from_numpy(img_array).unsqueeze(0)
-                                except Exception as img_e:
-                                    print(f"[ERROR] Image processing error: {str(img_e)}")
-                                    current_text_output += f"\nImage processing error: {str(img_e)}"
+                                except Exception:
                                     if current_image_tensor is None:
-                                        current_image_tensor = self.generate_empty_image()
+                                        current_image_tensor = cls.generate_empty_image()
+                    if current_image_tensor is None:
+                        current_image_tensor = cls.generate_empty_image()
+                    result_queue.put(("success", (current_text_output, current_image_tensor)))
+                except Exception as e_proc:
+                    result_queue.put(("error", e_proc))
 
-                        if current_image_tensor is None:
-                            current_image_tensor = self.generate_empty_image()
+            api_thread = threading.Thread(target=api_call)
+            api_thread.daemon = True
+            api_thread.start()
 
-                        result_queue.put(("success", (current_text_output, current_image_tensor)))
-                        print("[INFO] API response processing successful.")
-
-                    except Exception as e_proc:
-                        print(f"[ERROR] A critical error occurred while processing the successful API response: {str(e_proc)}")
-                        result_queue.put(("error", e_proc))
-
-
-                result_queue = queue.Queue()
-
-                api_thread = threading.Thread(target=api_call)
-                api_thread.daemon = True
-                api_thread.start()
-
-                text_output = ""
-                image_tensor = self.generate_empty_image()
-
-                try:
-                    status, result = result_queue.get(timeout=timeout)
-                    elapsed_time = time.time() - start_time
-
-                    if status == "success":
-                        text_output, image_tensor = result
-                        print(f"[INFO] API request and processing successfully completed in {elapsed_time:.2f} seconds")
+            try:
+                status, result = result_queue.get(timeout=timeout)
+                elapsed_time = time.time() - start_time
+                if status == "success":
+                    text_output, image_tensor = result
+                else:
+                    error_exception = result
+                    text_output = f"API call/processing error: {str(error_exception)}"
+                    if any(term in str(error_exception).lower() for term in ["timeout", "connection", "network", "socket", "连接", "网络"]) and not network_ok and not use_proxy:
+                        text_output += " Network connection test failed, consider enabling proxy."
+            except queue.Empty:
+                text_output = f"Gemini API request/processing timed out, waited {timeout} seconds."
+                if not network_ok:
+                    if use_proxy:
+                        text_output += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
                     else:
-                        error_exception = result
-                        print(f"[ERROR] Error in API request/processing thread after {elapsed_time:.2f} seconds: {str(error_exception)}")
-                        text_output = f"API call/processing error: {str(error_exception)}"
-                        error_str = str(error_exception).lower()
-                        if any(term in error_str for term in ["timeout", "connection", "network", "socket", "连接", "网络"]):
-                            if not network_ok and use_proxy != True:
-                                text_output += " Network connection test failed, consider enabling proxy."
-                except queue.Empty:
-                    elapsed_time = time.time() - start_time
-                    print(f"[ERROR] API request/processing timed out in main thread, waited: {elapsed_time:.2f} seconds")
+                        text_output += " Network connection test failed, consider enabling proxy."
+                else:
+                    text_output += " API request timed out despite network being OK."
 
-                    timeout_msg = f"Gemini API request/processing timed out, waited {timeout} seconds."
-                    if not network_ok:
-                        if use_proxy == True:
-                            timeout_msg += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
-                        else:
-                            timeout_msg += " Network connection test failed, consider enabling proxy."
-                    else:
-                        timeout_msg += " Network connection test successful, but API request/processing still timed out. This could be due to a busy server or a large request."
-                    text_output = timeout_msg
-            except Exception as e:
-                print(f"[ERROR] Unhandled error in generate method: {str(e)}")
-                text_output = f"Unhandled error: {str(e)}"
-                if image_tensor is None:
-                    image_tensor = self.generate_empty_image()
+        except Exception as e:
+            print(f"[ERROR] Unhandled error in generate method: {str(e)}")
+            text_output = f"Unhandled error: {str(e)}"
+            if image_tensor is None:
+                image_tensor = cls.generate_empty_image()
 
-            final_actual_seed = actual_seed if actual_seed is not None else 0
-            if use_seed:
-                # Update cache with all current inputs and outputs
-                self.last_input_seed = seed
-                self.last_actual_seed = final_actual_seed
-                self.last_text_output = text_output
-                self.last_image_tensor = image_tensor
-                self.last_config = config
-                self.last_prompt = prompt
-                self.last_system_instruction = system_instruction
-                self.last_model = model
-                self.last_temperature = temperature
-                self.last_top_p = top_p
-                self.last_top_k = top_k
-                self.last_max_output_tokens = max_output_tokens
-                self.last_include_images = include_images
-                self.last_aspect_ratio = aspect_ratio
-                self.last_bypass_mode = bypass_mode
-                self.last_thinking_budget = thinking_budget
-                self.last_input_image = input_image.clone() if input_image is not None else None
-                self.last_input_image_2 = input_image_2.clone() if input_image_2 is not None else None
+        final_actual_seed = actual_seed if actual_seed is not None else 0
+        if use_seed:
+            try:
+                cls._cache[fingerprint] = (text_output, image_tensor, final_actual_seed)
+            except Exception:
+                pass
 
-            return (text_output, image_tensor, final_actual_seed)
+        try:
+            return io.NodeOutput(text_output, image_tensor, final_actual_seed)
         finally:
             if original_http_proxy:
                 os.environ['HTTP_PROXY'] = original_http_proxy
@@ -826,14 +752,4 @@ class SSL_GeminiTextPrompt(ComfyNodeABC):
             except:
                 pass
 
-NODE_CLASS_MAPPINGS = {
-    "SSL_GeminiAPIKeyConfig": SSL_GeminiAPIKeyConfig,
-    "SSL_GeminiTextPrompt": SSL_GeminiTextPrompt,
-    "GetKeyAPI": GetKeyAPI,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "SSL_GeminiAPIKeyConfig": "Configure Gemini API Key",
-    "SSL_GeminiTextPrompt": "Expanded Gemini Text/Image",
-    "GetKeyAPI": "Get API Key from JSON",
-}
+# V3 uses ComfyExtension entrypoint in __init__.py to expose nodes
