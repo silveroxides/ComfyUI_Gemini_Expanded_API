@@ -19,6 +19,7 @@ import sys
 import importlib
 import subprocess
 import random
+import hashlib
 from typing import Any, Tuple
 
 def check_and_install_dependencies():
@@ -151,6 +152,22 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
     GemConfig = io.Custom("GEMINI_CONFIG")
     _cache: dict = {}
 
+    # Define model lists centrally to ensure consistency between cache logic and execution logic
+    THINKING_MODELS = [
+        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
+        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
+        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
+        "gemini-2.5-flash-preview-09-2025",
+        "gemini-3-pro-preview"
+    ]
+    IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-3-pro-image-preview"]
+    MEDIA_RES_MODELS = [
+        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
+        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
+        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
+        "gemini-3-pro-preview"
+    ]
+
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -161,7 +178,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                 cls.GemConfig.Input("config"),
                 io.String.Input("prompt", multiline=True),
                 io.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                io.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
+                io.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
                 io.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -196,7 +213,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
 
         patternperiod = r"\."
         patternspace = r"\s"
-        patterncomma = r"," 
+        patterncomma = r","
         patterndash = r"\-"
         patternsingq = r"\'"
         patterndoubq = r'\"'
@@ -250,7 +267,51 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                                              include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
-                                             input_image=None, input_image_2=None):
+                                             input_image=None, input_image_2=None,
+                                             use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
+                                             include_thoughts=False, thinking_level=None, media_resolution=None):
+
+        # 1. Hashing Images
+        def get_tensor_hash(tensor):
+            if tensor is None:
+                return "None"
+            try:
+                return hashlib.sha256(np.ascontiguousarray(tensor.cpu().numpy()).tobytes()).hexdigest()
+            except Exception as e:
+                print(f"[WARNING] Cache hashing failed for image: {e}")
+                return "Error"
+
+        image_1_hash = get_tensor_hash(input_image)
+        image_2_hash = get_tensor_hash(input_image_2)
+
+        # 2. Determine Effective Parameters based on Model
+        # This ensures we don't cache-miss if an irrelevant parameter changes
+
+        # Defaults
+        eff_include_images = False
+        eff_aspect_ratio = "None"
+        eff_thinking_level = "None"
+        eff_thinking_budget = -1
+        eff_include_thoughts = False
+
+        # Logic mirroring _build_generate_content_config exactly
+        if include_images and model in cls.IMAGE_MODELS:
+            eff_include_images = True
+            eff_aspect_ratio = str(aspect_ratio)
+            # When generating images, thinking params are ignored
+
+        elif model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
+            eff_thinking_level = thinking_level
+            eff_include_thoughts = include_thoughts
+            # Budget is ignored in this specific branch
+
+        elif model in cls.THINKING_MODELS:
+            eff_thinking_budget = int(thinking_budget)
+            eff_include_thoughts = include_thoughts
+            # Thinking level is ignored in this branch
+
+        # If none of the above, all effective thinking/image params remain default/ignored
+
         fingerprint = (
             str(config),
             prompt,
@@ -260,12 +321,21 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
             float(top_p),
             int(top_k),
             int(max_output_tokens),
-            bool(include_images),
-            str(aspect_ratio),
+            eff_include_images,    # EFFECTIVE include_images
+            eff_aspect_ratio,      # EFFECTIVE aspect_ratio
             str(bypass_mode),
-            int(thinking_budget),
+            eff_thinking_budget,   # EFFECTIVE thinking_budget
             use_seed,
-            int(seed)
+            int(seed) if use_seed else 0, # Only use seed in cache if use_seed is True
+            image_1_hash,
+            image_2_hash,
+            bool(use_proxy),
+            str(proxy_host),
+            int(proxy_port),
+            int(timeout),
+            eff_include_thoughts, # EFFECTIVE include_thoughts
+            eff_thinking_level,   # EFFECTIVE thinking_level
+            str(media_resolution)
         )
 
         cached = cls._cache.get(fingerprint)
@@ -325,7 +395,8 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
             types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),  # type: ignore
         ]
 
-        if include_images:
+        # Modified: Only trigger image config if include_images is True AND the model is actually an image model
+        if include_images and model in cls.IMAGE_MODELS:
             return types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
@@ -338,7 +409,8 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
-        if model == "gemini-3-pro-preview" and thinking_level is not None:
+        # Modified: Added check for thinking_level != "None"
+        if model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
             return types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
@@ -350,10 +422,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
-        if model in [
-            "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
-            "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025",
-            "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]:
+        if model in cls.THINKING_MODELS:
             return types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
@@ -381,35 +450,24 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None) -> io.NodeOutput:
 
-        def tensor_equal(t1, t2):
-            if t1 is None and t2 is None:
-                return True
-            if t1 is not None and t2 is not None:
-                try:
-                    return torch.equal(t1, t2)
-                except Exception:
-                    return False
-            return False
-
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
-            include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed, input_image, input_image_2
+            include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
+            input_image, input_image_2,
+            use_proxy, proxy_host, proxy_port, timeout,
+            include_thoughts, thinking_level, media_resolution
         )
 
         if cached is not None:
             cached_text, cached_image, cached_seed = cached
-            if tensor_equal(cached_image, input_image) or tensor_equal(cached_image, input_image_2):
-                print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
-                return io.NodeOutput(cached_text, cached_image, cached_seed)
+            print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
+            return io.NodeOutput(cached_text, cached_image, cached_seed)
 
         # --- keep most of the original implementation but converted to classmethod usage ---
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
         original_http_proxy_lower = os.environ.get('http_proxy')
         original_https_proxy_lower = os.environ.get('https_proxy')
-        thinking_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
-        media_res_models = ["gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-06-17", "gemini-3-pro-preview"]
-        thinking_levels = ["low", "medium", "high"]
 
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
 
@@ -519,7 +577,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                         img_byte_arr = stdlib_io.BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
-                        if model in media_res_models and media_resolution is not None:
+                        if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
                             img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}, "media_resolution": {"level": f"MEDIA_RESOLUTION_{media_resolution.upper()}"}}
                         else:
                             img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
@@ -531,7 +589,9 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
             else:
                 contents = padded_prompt
 
-            response_modalities = ["IMAGE", "TEXT"] if include_images else ["TEXT"]
+            # Logic Update: Only request IMAGE modality if include_images is TRUE AND it's the correct model
+            # Otherwise we stick to TEXT modality
+            response_modalities = ["IMAGE", "TEXT"] if (include_images and model in cls.IMAGE_MODELS) else ["TEXT"]
 
             generate_content_config = cls._build_generate_content_config(
                 model=model,
