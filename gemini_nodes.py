@@ -6,9 +6,10 @@ import torch
 import numpy as np
 import cv2
 from PIL import Image
-import io as stdlib_io
+import io
 import folder_paths  # type: ignore[reportMissingImports]
-from comfy_api.latest import ComfyExtension, io, ui  # type: ignore[reportMissingImports]
+from comfy_api.latest import ComfyExtension, ui  # type: ignore[reportMissingImports]
+from comfy_api.latest import io as cio
 from google import genai
 from google.genai import types
 import time
@@ -44,26 +45,26 @@ try:
 except Exception as e:
     print(f"[WARNING] Error checking dependencies: {str(e)}")
 
-class GetKeyAPI(io.ComfyNode):
+class GetKeyAPI(cio.ComfyNode):
     @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
+    def define_schema(cls) -> cio.Schema:
+        return cio.Schema(
             node_id="GetKeyAPI",
             display_name="Get API Key from JSON",
             category="utils/api_keys",
             inputs=[
-                io.String.Input("json_path", default="./input/apikeys.json", multiline=False, tooltip="Path to a .json file with simple top level structure with name as key and api-key as value. See example in custom node folder."),
-                io.Combo.Input("key_id_method", options=["custom", "random_rotate", "increment_rotate"], default="custom", tooltip="custom sets api-key to the api-key with the name set in the key_id widget. random_rotate randomly switches between keys if multiple in the .json and increment_rotate does it in order from first to last, then repeats."),
-                io.Int.Input("rotation_interval", default=0, min=0, tooltip="how many steps to jump when doing rotate."),
-                io.String.Input("key_id", default="placeholder", multiline=False, optional=True, tooltip="Put name of key in the .json here if using custom in key_id_method."),
+                cio.String.Input("json_path", default="./input/apikeys.json", multiline=False, tooltip="Path to a .json file with simple top level structure with name as key and api-key as value. See example in custom node folder."),
+                cio.Combo.Input("key_id_method", options=["custom", "random_rotate", "increment_rotate"], default="custom", tooltip="custom sets api-key to the api-key with the name set in the key_id widget. random_rotate randomly switches between keys if multiple in the .json and increment_rotate does it in order from first to last, then repeats."),
+                cio.Int.Input("rotation_interval", default=0, min=0, tooltip="how many steps to jump when doing rotate."),
+                cio.String.Input("key_id", default="placeholder", multiline=False, optional=True, tooltip="Put name of key in the .json here if using custom in key_id_method."),
             ],
             outputs=[
-                io.String.Output("API_KEY")
+                cio.String.Output("API_KEY")
             ]
         )
 
     @classmethod
-    def execute(cls, json_path: str, key_id_method: str, rotation_interval: int, key_id: str | None = "placeholder") -> io.NodeOutput:
+    def execute(cls, json_path: str, key_id_method: str, rotation_interval: int, key_id: str | None = "placeholder") -> cio.NodeOutput:
         api_keys_data = None
         absolute_json_path = os.path.abspath(json_path)
 
@@ -116,25 +117,25 @@ class GetKeyAPI(io.ComfyNode):
              raise ValueError(f"RotateKeyAPI Error: Retrieved value for selected key is not a valid string. Value: {selected_key_value}")
 
         print(f"RotateKeyAPI: Successfully retrieved API key using method '{key_id_method}'.")
-        return io.NodeOutput(selected_key_value)
+        return cio.NodeOutput(selected_key_value)
 
 
 
-class SSL_GeminiAPIKeyConfig(io.ComfyNode):
-    GemConfig = io.Custom("GEMINI_CONFIG")
+class SSL_GeminiAPIKeyConfig(cio.ComfyNode):
+    GemConfig = cio.Custom("GEMINI_CONFIG")
 
     @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
+    def define_schema(cls) -> cio.Schema:
+        return cio.Schema(
             node_id="SSL_GeminiAPIKeyConfig",
             display_name="Configure Gemini API Key",
             category="API/Gemini",
             inputs=[
-                io.String.Input("api_key", multiline=False),
-                io.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v2beta"], default="v1alpha"),
-                io.Boolean.Input("vertexai", default=False),
-                io.String.Input("vertexai_project", default="placeholder", optional=True),
-                io.String.Input("vertexai_location", default="placeholder", optional=True),
+                cio.String.Input("api_key", multiline=False),
+                cio.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v2beta"], default="v1alpha"),
+                cio.Boolean.Input("vertexai", default=False),
+                cio.String.Input("vertexai_project", default="placeholder", optional=True),
+                cio.String.Input("vertexai_location", default="placeholder", optional=True),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -142,14 +143,14 @@ class SSL_GeminiAPIKeyConfig(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, api_key: str, api_version: str, vertexai: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> io.NodeOutput:
+    def execute(cls, api_key: str, api_version: str, vertexai: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> cio.NodeOutput:
         config = {"api_key": api_key, "api_version": api_version, "vertexai": vertexai, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
-        return io.NodeOutput(config)
+        return cio.NodeOutput(config)
 
 
 
-class SSL_GeminiTextPrompt(io.ComfyNode):
-    GemConfig = io.Custom("GEMINI_CONFIG")
+class SSL_GeminiTextPrompt(cio.ComfyNode):
+    GemConfig = cio.Custom("GEMINI_CONFIG")
     _cache: dict = {}
 
     # Define model lists centrally to ensure consistency between cache logic and execution logic
@@ -169,40 +170,40 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
     ]
 
     @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
+    def define_schema(cls) -> cio.Schema:
+        return cio.Schema(
             node_id="SSL_GeminiTextPrompt",
             display_name="Expanded Gemini Text/Image",
             category="API/Gemini",
             inputs=[
                 cls.GemConfig.Input("config"),
-                io.String.Input("prompt", multiline=True),
-                io.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                io.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
-                io.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
-                io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
-                io.Int.Input("top_k", default=40, min=1, max=100, step=1),
-                io.Int.Input("max_output_tokens", default=8192, min=1, max=65536, step=1),
-                io.Boolean.Input("include_images", default=False),
-                io.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], default="None"),
-                io.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
-                io.Int.Input("thinking_budget", default=0, min=-1, max=24576, step=1, tooltip="0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"),
-                io.Image.Input("input_image", optional=True),
-                io.Image.Input("input_image_2", optional=True),
-                io.Boolean.Input("use_proxy", default=False),
-                io.String.Input("proxy_host", default="127.0.0.1"),
-                io.Int.Input("proxy_port", default=7890, min=1, max=65535),
-                io.Boolean.Input("use_seed", default=True),
-                io.Int.Input("seed", default=0, min=0, max=2147483647),
-                io.Int.Input("timeout", default=30, min=15, max=300, step=15),
-                io.Boolean.Input("include_thoughts", default=False),
-                io.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."),
-                io.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
+                cio.String.Input("prompt", multiline=True),
+                cio.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
+                cio.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
+                cio.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
+                cio.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
+                cio.Int.Input("top_k", default=40, min=1, max=100, step=1),
+                cio.Int.Input("max_output_tokens", default=8192, min=1, max=65536, step=1),
+                cio.Boolean.Input("include_images", default=False),
+                cio.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], default="None"),
+                cio.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
+                cio.Int.Input("thinking_budget", default=0, min=-1, max=24576, step=1, tooltip="0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"),
+                cio.Image.Input("input_image", optional=True),
+                cio.Image.Input("input_image_2", optional=True),
+                cio.Boolean.Input("use_proxy", default=False),
+                cio.String.Input("proxy_host", default="127.0.0.1"),
+                cio.Int.Input("proxy_port", default=7890, min=1, max=65535),
+                cio.Boolean.Input("use_seed", default=True),
+                cio.Int.Input("seed", default=0, min=0, max=2147483647),
+                cio.Int.Input("timeout", default=30, min=15, max=300, step=15),
+                cio.Boolean.Input("include_thoughts", default=False),
+                cio.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."),
+                cio.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
             ],
             outputs=[
-                io.String.Output("text"),
-                io.Image.Output("image"),
-                io.Int.Output("final_actual_seed")
+                cio.String.Output("text"),
+                cio.Image.Output("image"),
+                cio.Int.Output("final_actual_seed")
             ]
         )
 
@@ -448,7 +449,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
     def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                 include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
-                include_thoughts=False, thinking_level=None, media_resolution=None) -> io.NodeOutput:
+                include_thoughts=False, thinking_level=None, media_resolution=None) -> cio.NodeOutput:
 
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
@@ -461,7 +462,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
         if cached is not None:
             cached_text, cached_image, cached_seed = cached
             print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
-            return io.NodeOutput(cached_text, cached_image, cached_seed)
+            return cio.NodeOutput(cached_text, cached_image, cached_seed)
 
         # --- keep most of the original implementation but converted to classmethod usage ---
         original_http_proxy = os.environ.get('HTTP_PROXY')
@@ -538,7 +539,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                     client = genai.Client(api_key=config.get("api_key"), http_options=types.HttpOptions(api_version=config.get("api_version")), **client_options)  # type: ignore
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
-                return io.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                return cio.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
             # Network test (best-effort)
             try:
@@ -574,7 +575,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                         img_array = img[0].cpu().numpy()
                         img_array = (img_array * 255).astype(np.uint8)
                         pil_img = Image.fromarray(img_array)
-                        img_byte_arr = stdlib_io.BytesIO()
+                        img_byte_arr = io.BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
                         if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
@@ -585,7 +586,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                     contents = img_parts + [{"text": padded_prompt}]
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
-                    return io.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                    return cio.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
             else:
                 contents = padded_prompt
 
@@ -714,7 +715,7 @@ class SSL_GeminiTextPrompt(io.ComfyNode):
                 pass
 
         try:
-            return io.NodeOutput(text_output, image_tensor, final_actual_seed)
+            return cio.NodeOutput(text_output, image_tensor, final_actual_seed)
         finally:
             if original_http_proxy:
                 os.environ['HTTP_PROXY'] = original_http_proxy
