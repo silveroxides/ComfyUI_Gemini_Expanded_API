@@ -159,14 +159,15 @@ class SSL_GeminiTextPrompt(cio.ComfyNode):
         "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
         "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
         "gemini-2.5-flash-preview-09-2025",
-        "gemini-3-pro-preview"
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview"
     ]
-    IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-3-pro-image-preview"]
+    IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
     MEDIA_RES_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
         "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
         "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
-        "gemini-3-pro-preview"
+        "gemini-3-pro-preview", "gemini-3-flash-preview"
     ]
 
     @classmethod
@@ -179,7 +180,7 @@ class SSL_GeminiTextPrompt(cio.ComfyNode):
                 cls.GemConfig.Input("config"),
                 cio.String.Input("prompt", multiline=True),
                 cio.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                cio.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview"], default="gemini-2.0-flash"),
+                cio.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-09-2025", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-3-flash-preview"], default="gemini-2.0-flash"),
                 cio.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 cio.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 cio.Int.Input("top_k", default=40, min=1, max=100, step=1),
