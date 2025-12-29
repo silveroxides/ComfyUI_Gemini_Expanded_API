@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import cv2
 from PIL import Image
-import io
+from io import BytesIO
 import folder_paths  # type: ignore[reportMissingImports]
 from comfy_api.latest import ComfyExtension, UI, IO  # type: ignore[reportMissingImports]
 from google import genai
@@ -580,7 +580,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         img_array = img[0].cpu().numpy()
                         img_array = (img_array * 255).astype(np.uint8)
                         pil_img = Image.fromarray(img_array)
-                        img_byte_arr = io.BytesIO()
+                        print(f"[DEBUG] Input image format: {pil_img.mode}")
+                        img_byte_arr = BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
                         if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
