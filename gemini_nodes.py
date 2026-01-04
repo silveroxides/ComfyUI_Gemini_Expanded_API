@@ -151,6 +151,7 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
 class SSL_GeminiTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
     _cache: dict = {}
+    _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint_without_seed) -> successful_gemini_seed
 
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
@@ -199,6 +200,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.Boolean.Input("include_thoughts", default=False),
                 IO.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. if this is set, then thinking budget is ignored."),
                 IO.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
+                IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
+                IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
             ],
             outputs=[
                 IO.String.Output("text"),
@@ -270,7 +273,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                              include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
                                              input_image=None, input_image_2=None,
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
-                                             include_thoughts=False, thinking_level=None, media_resolution=None):
+                                             include_thoughts=False, thinking_level=None, media_resolution=None,
+                                             retry_pattern="", max_retries=3):
 
         # 1. Hashing Images
         def get_tensor_hash(tensor):
@@ -336,7 +340,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             int(timeout),
             eff_include_thoughts, # EFFECTIVE include_thoughts
             eff_thinking_level,   # EFFECTIVE thinking_level
-            str(media_resolution)
+            str(media_resolution),
+            str(retry_pattern),   # Include retry pattern in fingerprint
+            int(max_retries)      # Include max retries in fingerprint
         )
 
         cached = cls._cache.get(fingerprint)
@@ -454,14 +460,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                 include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
-                include_thoughts=False, thinking_level=None, media_resolution=None) -> IO.NodeOutput:
+                include_thoughts=False, thinking_level=None, media_resolution=None,
+                retry_pattern="", max_retries=3) -> IO.NodeOutput:
 
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
             input_image, input_image_2,
             use_proxy, proxy_host, proxy_port, timeout,
-            include_thoughts, thinking_level, media_resolution
+            include_thoughts, thinking_level, media_resolution,
+            retry_pattern, max_retries
         )
 
         if cached is not None:
@@ -488,6 +496,17 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             print(padded_system_instruction)
 
         actual_seed = cls._handle_seed(use_seed, seed)
+        input_seed = seed  # Store the original input seed for cache key
+
+        # Check if we have a cached successful gemini seed for this input seed
+        # Build a cache key that excludes the seed itself (to match different gemini seeds for same input)
+        if use_seed and retry_pattern and max_retries > 0:
+            seed_cache_key = (input_seed, fingerprint[:-4])  # Exclude seed, retry_pattern, max_retries from key
+            cached_gemini_seed = cls._seed_map_cache.get(seed_cache_key)
+            if cached_gemini_seed is not None:
+                print(f"[INFO] Using cached successful gemini seed {cached_gemini_seed} for input seed {input_seed}")
+                actual_seed = cached_gemini_seed
+
 
         # Flatten and simplify nested try/except blocks to ensure correct pairing
         original_http_proxy = os.environ.get('HTTP_PROXY')
@@ -687,25 +706,98 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             api_thread.daemon = True
             api_thread.start()
 
-            try:
-                status, result = result_queue.get(timeout=timeout)
-                elapsed_time = time.time() - start_time
-                if status == "success":
-                    text_output, image_tensor = result
-                else:
-                    error_exception = result
-                    text_output = f"API call/processing error: {str(error_exception)}"
-                    if any(term in str(error_exception).lower() for term in ["timeout", "connection", "network", "socket", "连接", "网络"]) and not network_ok and not use_proxy:
-                        text_output += " Network connection test failed, consider enabling proxy."
-            except queue.Empty:
-                text_output = f"Gemini API request/processing timed out, waited {timeout} seconds."
-                if not network_ok:
-                    if use_proxy:
-                        text_output += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
+            # Retry loop for pattern matching
+            retry_attempt = 0
+            retry_needed = True
+            while retry_needed:
+                retry_needed = False  # Will be set to True if pattern matches
+                
+                try:
+                    status, result = result_queue.get(timeout=timeout)
+                    elapsed_time = time.time() - start_time
+                    if status == "success":
+                        text_output, image_tensor = result
+                        
+                        # Check if retry pattern matches
+                        if retry_pattern and max_retries > 0 and retry_attempt < max_retries:
+                            print(f"[DEBUG] Checking retry pattern '{retry_pattern}' against response (first 200 chars): {text_output[:200]}")
+                            try:
+                                compiled_pattern = re.compile(retry_pattern, re.IGNORECASE)
+                                if compiled_pattern.search(text_output):
+                                    retry_attempt += 1
+                                    print(f"[INFO] Retry pattern matched in response. Retry attempt {retry_attempt}/{max_retries}")
+                                    
+                                    # Generate new random gemini seed for retry
+                                    current_time = int(time.time() * 1000)
+                                    random_component = random.randint(0, 1000000)
+                                    actual_seed = (current_time + random_component) % 2147483647
+                                    print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
+                                    
+                                    # Update config seed and retry
+                                    if use_seed:
+                                        try:
+                                            generate_content_config.seed = actual_seed
+                                        except Exception:
+                                            pass
+                                    
+                                    # Create new queue and thread for retry
+                                    result_queue = queue.Queue()
+                                    start_time = time.time()
+                                    api_thread = threading.Thread(target=api_call)
+                                    api_thread.daemon = True
+                                    api_thread.start()
+                                    retry_needed = True
+                                    continue
+                            except re.error as regex_err:
+                                print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
                     else:
-                        text_output += " Network connection test failed, consider enabling proxy."
-                else:
-                    text_output += " API request timed out despite network being OK."
+                        error_exception = result
+                        text_output = f"API call/processing error: {str(error_exception)}"
+                        
+                        # Check if retry pattern matches error/finish reason
+                        if retry_pattern and max_retries > 0 and retry_attempt < max_retries:
+                            print(f"[DEBUG] Checking retry pattern '{retry_pattern}' against error: {text_output}")
+                            try:
+                                compiled_pattern = re.compile(retry_pattern, re.IGNORECASE)
+                                if compiled_pattern.search(text_output):
+                                    retry_attempt += 1
+                                    print(f"[INFO] Retry pattern matched in error. Retry attempt {retry_attempt}/{max_retries}")
+                                    
+                                    # Generate new random gemini seed for retry
+                                    current_time = int(time.time() * 1000)
+                                    random_component = random.randint(0, 1000000)
+                                    actual_seed = (current_time + random_component) % 2147483647
+                                    print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
+                                    
+                                    # Update config seed and retry
+                                    if use_seed:
+                                        try:
+                                            generate_content_config.seed = actual_seed
+                                        except Exception:
+                                            pass
+                                    
+                                    # Create new queue and thread for retry
+                                    result_queue = queue.Queue()
+                                    start_time = time.time()
+                                    api_thread = threading.Thread(target=api_call)
+                                    api_thread.daemon = True
+                                    api_thread.start()
+                                    retry_needed = True
+                                    continue
+                            except re.error as regex_err:
+                                print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
+                        
+                        if any(term in str(error_exception).lower() for term in ["timeout", "connection", "network", "socket", "连接", "网络"]) and not network_ok and not use_proxy:
+                            text_output += " Network connection test failed, consider enabling proxy."
+                except queue.Empty:
+                    text_output = f"Gemini API request/processing timed out, waited {timeout} seconds."
+                    if not network_ok:
+                        if use_proxy:
+                            text_output += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
+                        else:
+                            text_output += " Network connection test failed, consider enabling proxy."
+                    else:
+                        text_output += " API request timed out despite network being OK."
 
         except Exception as e:
             print(f"[ERROR] Unhandled error in generate method: {str(e)}")
@@ -714,11 +806,20 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 image_tensor = cls.generate_empty_image()
 
         final_actual_seed = actual_seed if actual_seed is not None else 0
+        
+        # Cache the result
         if use_seed:
             try:
                 cls._cache[fingerprint] = (text_output, image_tensor, final_actual_seed)
             except Exception:
                 pass
+            
+            # Cache the successful gemini seed for this input seed (if retry was enabled)
+            if retry_pattern and max_retries > 0:
+                seed_cache_key = (input_seed, fingerprint[:-4])
+                cls._seed_map_cache[seed_cache_key] = final_actual_seed
+                print(f"[INFO] Cached successful gemini seed {final_actual_seed} for input seed {input_seed}")
+
 
         try:
             return IO.NodeOutput(text_output, image_tensor, final_actual_seed)
