@@ -28,16 +28,17 @@ def check_and_install_dependencies():
         'pysocks': 'PySocks',
     }
 
+    missing_packages = []
     for module_name, package_name in required_packages.items():
         try:
             importlib.import_module(module_name)
         except ImportError:
-            print(f"[WARNING] {package_name} not found, trying to install...")
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-                print(f"[INFO] Successfully installed {package_name}")
-            except Exception as e:
-                print(f"[ERROR] Failed to install {package_name}: {str(e)}")
+            missing_packages.append(package_name)
+
+    if missing_packages:
+        print(f"[WARNING] Missing required dependencies: {', '.join(missing_packages)}.")
+        print(f"[INFO] Please install them using: pip install {' '.join(missing_packages)}")
+        print(f"[INFO] Alternatively, install all requirements: pip install -r requirements.txt")
 
 try:
     check_and_install_dependencies()

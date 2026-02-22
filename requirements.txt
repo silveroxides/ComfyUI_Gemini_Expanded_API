@@ -2,4 +2,5 @@ google-genai>=1.51.0
 numpy
 torch
 Pillow
-torch
+requests
+PySocks

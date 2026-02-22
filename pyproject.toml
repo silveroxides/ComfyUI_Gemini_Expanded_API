@@ -1,9 +1,9 @@
 [project]
 name = "ComfyUI_Gemini_Expanded_API"
 description = "Node for usage of Gemini API"
-version = "1.2.4"
+version = "1.2.5"
 license = {file = "LICENSE"}
-dependencies = ["google-genai", "numpy", "torch"]
+dependencies = ["google-genai", "numpy", "torch", "requests", "PySocks"]
 
 [project.urls]
 Repository = "https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API"
