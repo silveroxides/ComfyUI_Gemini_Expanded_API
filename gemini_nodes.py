@@ -155,19 +155,21 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
-        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
-        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
-        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
-        "gemini-2.5-flash-preview-09-2025",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview"
+        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
+        "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025",
+        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+    ]
+    GEN3_THINKING_MODELS = [
+    "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview", "gemini-3-flash-preview"
     ]
     IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
     MEDIA_RES_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
         "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
         "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
-        "gemini-3-pro-preview", "gemini-3-flash-preview"
+        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+        "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
 
     @classmethod
@@ -180,7 +182,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite-preview-09-2025", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-3-flash-preview"], default="gemini-2.0-flash"),
+                IO.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash-001", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-preview-09-2025", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-2.5-computer-use-preview-10-2025", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.0-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -305,7 +307,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             eff_aspect_ratio = str(aspect_ratio)
             # When generating images, thinking params are ignored
 
-        elif model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
+        elif model in cls.GEN3_THINKING_MODELS and thinking_level is not None and thinking_level != "None":
             eff_thinking_level = thinking_level
             eff_include_thoughts = include_thoughts
             # Budget is ignored in this specific branch
@@ -421,8 +423,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
+        G3Pro = ["gemini-3.1-pro-preview", "gemini-3-pro-preview"]
         # Modified: Added check for thinking_level != "None"
-        if model == "gemini-3-pro-preview" and thinking_level is not None and thinking_level != "None":
+        if model in G3Pro and thinking_level is not None and thinking_level != "None":
             return types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
