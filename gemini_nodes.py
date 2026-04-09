@@ -131,12 +131,12 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
             display_name="Configure Gemini API Key",
             category="API/Gemini",
             inputs=[
-                IO.String.Input("api_key", multiline=False),
-                IO.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v2beta"], default="v1alpha"),
+                IO.String.Input("api_key", multiline=False, default=""),
+                IO.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v1beta1", "v2beta"], default="v1alpha", tooltip="Select API version to use. v1alpha, v1beta and v2beta are Gemini API specific while v1beta1 is Vertex AI specific. Both can use v1"),
                 IO.Boolean.Input("use_vertexai_env", default=False, tooltip="Bypasses rest of config and uses Vertex AI environment variables if set"),
                 IO.Boolean.Input("vertexai_express", default=False),
-                IO.String.Input("vertexai_project", default="placeholder", optional=True),
-                IO.String.Input("vertexai_location", default="placeholder", optional=True),
+                IO.String.Input("vertexai_project", optional=True),
+                IO.String.Input("vertexai_location", optional=True),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -144,7 +144,7 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> IO.NodeOutput:
+    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool, vertexai_project: str | None = "", vertexai_location: str | None = "") -> IO.NodeOutput:
         config = {"api_key": api_key, "api_version": api_version, "use_vertexai_env": use_vertexai_env, "vertexai_express": vertexai_express, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
         return IO.NodeOutput(config)
 
@@ -562,16 +562,18 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 vertexai_express = config.get("vertexai_express", False)
                 use_vertexai_env = config.get("use_vertexai_env", False)
                 api_version = config.get("api_version")
+                project = config.get("vertexai_project")
+                location = config.get("vertexai_location")
 
                 if use_vertexai_env:
                     try:
-                        env_use = os.environ["GOOGLE_GENAI_USE_VERTEXAI"].strip()
+                        env_use = os.environ["GOOGLE_GENAI_USE_VERTEXAI"].strip() if "GOOGLE_GENAI_USE_VERTEXAI" in os.environ else "True"
                         assert env_use, "GOOGLE_GENAI_USE_VERTEXAI is empty"
 
-                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip()
+                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip() if "GOOGLE_CLOUD_PROJECT" in os.environ else project
                         assert env_proj, "GOOGLE_CLOUD_PROJECT is empty"
 
-                        env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip()
+                        env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip() if "GOOGLE_CLOUD_LOCATION" in os.environ else location
                         assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
 
                         client = genai.Client(
@@ -591,13 +593,30 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         return IO.NodeOutput(f"Invalid environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
                 elif vertexai_express:
-                    project = config.get("vertexai_project")
-                    location = config.get("vertexai_location")
+
+                    if not project:
+                        try:
+                            project = os.environ["GOOGLE_CLOUD_PROJECT"].strip()
+                            assert project, "GOOGLE_CLOUD_PROJECT is empty"
+                        except KeyError:
+                            print("Missing required environment variable: GOOGLE_CLOUD_PROJECT")
+                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_PROJECT", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                    else:
+                        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project)
+
+                    if not location:
+                        try:
+                            location = os.environ["GOOGLE_CLOUD_LOCATION"].strip()
+                            assert location, "GOOGLE_CLOUD_LOCATION is empty"
+                        except KeyError:
+                            print("Missing required environment variable: GOOGLE_CLOUD_LOCATION")
+                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_LOCATION", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                    else:
+                        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
 
                     client = genai.Client(
-                        vertexai_express=True,
-                        project=project,
-                        location=location,
+                        vertexai=True,
+                        api_key=config.get("api_key"),
                         http_options=types.HttpOptions(api_version=api_version),
                         **client_options
                     )
@@ -620,9 +639,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 test_socket.settimeout(5)
                 if use_vertexai_env:
-                    test_host = "aiplatform.googleapis.com"
+                    test_host = "aiplatform.googleapis.com/$discovery/rest"
                 else:
-                    test_host = "generativelanguage.googleapis.com"
+                    test_host = "generativelanguage.googleapis.com/$discovery/rest"
                 if use_proxy:
                     try:
                         import socks  # type: ignore[import]
@@ -763,13 +782,13 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             retry_needed = True
             while retry_needed:
                 retry_needed = False  # Will be set to True if pattern matches
-                
+
                 try:
                     status, result = result_queue.get(timeout=timeout)
                     elapsed_time = time.time() - start_time
                     if status == "success":
                         text_output, image_tensor = result
-                        
+
                         # Check if retry pattern matches
                         if retry_pattern and max_retries > 0 and retry_attempt < max_retries:
                             print(f"[DEBUG] Checking retry pattern '{retry_pattern}' against response (first 200 chars): {text_output[:200]}")
@@ -778,20 +797,20 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 if compiled_pattern.search(text_output):
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in response. Retry attempt {retry_attempt}/{max_retries}")
-                                    
+
                                     # Generate new random gemini seed for retry
                                     current_time = int(time.time() * 1000)
                                     random_component = random.randint(0, 1000000)
                                     actual_seed = (current_time + random_component) % 2147483647
                                     print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
-                                    
+
                                     # Update config seed and retry
                                     if use_seed:
                                         try:
                                             generate_content_config.seed = actual_seed
                                         except Exception:
                                             pass
-                                    
+
                                     # Create new queue and thread for retry
                                     result_queue = queue.Queue()
                                     start_time = time.time()
@@ -805,7 +824,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     else:
                         error_exception = result
                         text_output = f"API call/processing error: {str(error_exception)}"
-                        
+
                         # Check if retry pattern matches error/finish reason
                         if retry_pattern and max_retries > 0 and retry_attempt < max_retries:
                             print(f"[DEBUG] Checking retry pattern '{retry_pattern}' against error: {text_output}")
@@ -814,20 +833,20 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 if compiled_pattern.search(text_output):
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in error. Retry attempt {retry_attempt}/{max_retries}")
-                                    
+
                                     # Generate new random gemini seed for retry
                                     current_time = int(time.time() * 1000)
                                     random_component = random.randint(0, 1000000)
                                     actual_seed = (current_time + random_component) % 2147483647
                                     print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
-                                    
+
                                     # Update config seed and retry
                                     if use_seed:
                                         try:
                                             generate_content_config.seed = actual_seed
                                         except Exception:
                                             pass
-                                    
+
                                     # Create new queue and thread for retry
                                     result_queue = queue.Queue()
                                     start_time = time.time()
@@ -838,7 +857,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                     continue
                             except re.error as regex_err:
                                 print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
-                        
+
                         if any(term in str(error_exception).lower() for term in ["timeout", "connection", "network", "socket", "连接", "网络"]) and not network_ok and not use_proxy:
                             text_output += " Network connection test failed, consider enabling proxy."
                 except queue.Empty:
@@ -858,14 +877,14 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 image_tensor = cls.generate_empty_image()
 
         final_actual_seed = actual_seed if actual_seed is not None else 0
-        
+
         # Cache the result
         if use_seed:
             try:
                 cls._cache[fingerprint] = (text_output, image_tensor, final_actual_seed)
             except Exception:
                 pass
-            
+
             # Cache the successful gemini seed for this input seed (if retry was enabled)
             if retry_pattern and max_retries > 0:
                 seed_cache_key = (input_seed, fingerprint[:-4])
