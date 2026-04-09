@@ -133,7 +133,8 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
             inputs=[
                 IO.String.Input("api_key", multiline=False),
                 IO.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v2beta"], default="v1alpha"),
-                IO.Boolean.Input("vertexai", default=False),
+                IO.Boolean.Input("use_vertexai_env", default=False, tooltip="Bypasses rest of config and uses Vertex AI environment variables if set"),
+                IO.Boolean.Input("vertexai_express", default=False),
                 IO.String.Input("vertexai_project", default="placeholder", optional=True),
                 IO.String.Input("vertexai_location", default="placeholder", optional=True),
             ],
@@ -143,8 +144,8 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, api_key: str, api_version: str, vertexai: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> IO.NodeOutput:
-        config = {"api_key": api_key, "api_version": api_version, "vertexai": vertexai, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
+    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool, vertexai_project: str | None = "placeholder", vertexai_location: str | None = "placeholder") -> IO.NodeOutput:
+        config = {"api_key": api_key, "api_version": api_version, "use_vertexai_env": use_vertexai_env, "vertexai_express": vertexai_express, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
         return IO.NodeOutput(config)
 
 
@@ -157,7 +158,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
-        "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025",
+        "gemini-2.5-pro", "gemini-2.5-flash",
         "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
@@ -168,7 +169,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     MEDIA_RES_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
         "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
-        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash",
+        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-3.1-flash-lite-preview",
         "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
         "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
@@ -183,7 +184,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["learnlm-2.0-flash-experimental", "gemini-exp-1206", "gemini-2.0-flash-001", "gemini-2.0-flash", "gemini-2.0-flash-lite-001", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-2.5-flash-preview-09-2025", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-preview-09-2025", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-2.5-computer-use-preview-10-2025", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.0-flash"),
+                IO.Combo.Input("model", options=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -398,11 +399,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                        thinking_level, thinking_budget, include_thoughts, media_resolution):
         # Centralized builder for GenerateContentConfig used by different model/feature branches
         safety = [
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),  # type: ignore
+            #types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),  # type: ignore
+            #types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),  # type: ignore
+            #types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),  # type: ignore
+            #types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),  # type: ignore
+            #types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),  # type: ignore
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
@@ -558,23 +559,70 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     pass
 
             try:
-                vertexai = config.get("vertexai", False)
-                if vertexai:
+                vertexai_express = config.get("vertexai_express", False)
+                use_vertexai_env = config.get("use_vertexai_env", False)
+                api_version = config.get("api_version")
+
+                if use_vertexai_env:
+                    try:
+                        env_use = os.environ["GOOGLE_GENAI_USE_VERTEXAI"].strip()
+                        assert env_use, "GOOGLE_GENAI_USE_VERTEXAI is empty"
+
+                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip()
+                        assert env_proj, "GOOGLE_CLOUD_PROJECT is empty"
+
+                        env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip()
+                        assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
+
+                        client = genai.Client(
+                            vertexai=env_use,
+                            project=env_proj,
+                            location=env_loc,
+                            http_options=types.HttpOptions(api_version=api_version),
+                            **client_options
+                        )
+
+                    except KeyError as e:
+                        print(f"Missing required environment variable: {e}")
+                        return IO.NodeOutput(f"Missing environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+
+                    except AssertionError as e:
+                        print(f"Error: {e}")
+                        return IO.NodeOutput(f"Invalid environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+
+                elif vertexai_express:
                     project = config.get("vertexai_project")
                     location = config.get("vertexai_location")
-                    client = genai.Client(vertexai=vertexai, project=project, location=location, http_options=types.HttpOptions(api_version=config.get("api_version")), **client_options)  # type: ignore
+
+                    client = genai.Client(
+                        vertexai_express=True,
+                        project=project,
+                        location=location,
+                        http_options=types.HttpOptions(api_version=api_version),
+                        **client_options
+                    )
+
                 else:
-                    client = genai.Client(api_key=config.get("api_key"), http_options=types.HttpOptions(api_version=config.get("api_version")), **client_options)  # type: ignore
+                    client = genai.Client(
+                        api_key=config.get("api_key"),
+                        http_options=types.HttpOptions(api_version=api_version),
+                        **client_options
+                    )
+
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+
 
             # Network test (best-effort)
             try:
                 import socket
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 test_socket.settimeout(5)
-                test_host = "generativelanguage.googleapis.com"
+                if use_vertexai_env:
+                    test_host = "aiplatform.googleapis.com"
+                else:
+                    test_host = "generativelanguage.googleapis.com"
                 if use_proxy:
                     try:
                         import socks  # type: ignore[import]

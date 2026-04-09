@@ -7,7 +7,7 @@ Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has n
 2024.3.19: Updated to support multi-image processing.
 ## Features
 
-- Supports Gemini 2.0 series models (gemini-2.0-flash, gemini-2.0-flash-exp, gemini-2.0-pro)
+- Supports Gemini 2.x and 3.x series models
 - Supports text-to-text generation
 - Supports image-to-text generation (image understanding)
 - Supports text-to-image generation (Note: this functionality is implemented in separate .py files, not directly within this node.)
@@ -32,12 +32,21 @@ Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has n
 
 ## How to Use
 
-### 1. Configure API Key
+### 1. Configure API Key or Configure Vertex AI
+
+### Option A(Gemini API)
 
 First, you need to obtain a Google Gemini API key:
-1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Create an API key
+1. Visit [Google AI Studio](https://aistudio.google.com/app/api-keys) or [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create an API key (In Google Cloud Console it is recommended to set key restriction to the Generative Language API)
 3. In ComfyUI, locate and use the `Configure Gemini API Key` node to enter your API key.
+
+### Option B(Vertex AI) but this is a bit complicated and a guide would be too verbose here
+1. But start by visiting [Google Cloud Console Vertex AI API](https://console.cloud.google.com/apis/api/aiplatform.googleapis.com/overview) and Enable it.
+2. Visit the [Vertex AI Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) and select a Google Gemini model and then "view code" button.
+3. Read the instructions for chosen model at "Try (Python)" for the environment variable option or "Try while using express mode (Python)" for API key (Currently unsure if API here is working correctly)
+4. Set environment variables before launching: `GOOGLE_CLOUD_PROJECT=your-project-id`, `GOOGLE_CLOUD_LOCATION=global` and `GOOGLE_GENAI_USE_VERTEXAI=True` for variable option.
+5. In ComfyUI, locate and use the `Configure Gemini API Key` node and set `use_vertexai_env` to `true`.
 
 ### 2. Text Generation
 
