@@ -468,6 +468,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 include_thoughts=False, thinking_level=None, media_resolution=None,
                 retry_pattern="", max_retries=3) -> IO.NodeOutput:
 
+        print(f"[INFO] SSL_GeminiTextPrompt execute called, model: {model}")
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
@@ -521,7 +522,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         text_output = ""
         image_tensor = cls.generate_empty_image()
-        network_ok = True
         proxy_url: str | None = None
 
         try:
@@ -632,29 +632,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
-
-            # Network test (best-effort)
-            try:
-                import socket
-                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_socket.settimeout(5)
-                if use_vertexai_env:
-                    test_host = "aiplatform.googleapis.com/$discovery/rest"
-                else:
-                    test_host = "generativelanguage.googleapis.com/$discovery/rest"
-                if use_proxy:
-                    try:
-                        import socks  # type: ignore[import]
-                        test_socket = socks.socksocket()
-                        test_socket.set_proxy(socks.HTTP, proxy_host, proxy_port)
-                        test_socket.settimeout(5)
-                    except Exception:
-                        pass
-                test_socket.connect((test_host, 443))
-                test_socket.close()
-                network_ok = True
-            except Exception:
-                network_ok = False
 
             # Prepare contents (images + prompt)
             images_to_process = []
@@ -858,17 +835,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             except re.error as regex_err:
                                 print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
 
-                        if any(term in str(error_exception).lower() for term in ["timeout", "connection", "network", "socket", "连接", "网络"]) and not network_ok and not use_proxy:
-                            text_output += " Network connection test failed, consider enabling proxy."
                 except queue.Empty:
                     text_output = f"Gemini API request/processing timed out, waited {timeout} seconds."
-                    if not network_ok:
-                        if use_proxy:
-                            text_output += f" Network connection test failed, the current proxy ({proxy_host}:{proxy_port}) may be invalid, please check proxy settings."
-                        else:
-                            text_output += " Network connection test failed, consider enabling proxy."
-                    else:
-                        text_output += " API request timed out despite network being OK."
 
         except Exception as e:
             print(f"[ERROR] Unhandled error in generate method: {str(e)}")
