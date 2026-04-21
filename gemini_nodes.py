@@ -154,6 +154,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint_without_seed) -> successful_gemini_seed
+    _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
 
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
@@ -399,16 +400,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                        thinking_level, thinking_budget, include_thoughts, media_resolution):
         # Centralized builder for GenerateContentConfig used by different model/feature branches
         safety = [
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),  # type: ignore
-            types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),  # type: ignore
-            #types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
-            #types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
-            #types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
-            #types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
-            #types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=types.HarmBlockThreshold.BLOCK_NONE),  # type: ignore
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_CIVIC_INTEGRITY", threshold="BLOCK_NONE"),
         ]
 
         # Modified: Only trigger image config if include_images is True AND the model is actually an image model
@@ -513,7 +509,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[INFO] Using cached successful gemini seed {cached_gemini_seed} for input seed {input_seed}")
                 actual_seed = cached_gemini_seed
 
-
         # Flatten and simplify nested try/except blocks to ensure correct pairing
         original_http_proxy = os.environ.get('HTTP_PROXY')
         original_https_proxy = os.environ.get('HTTPS_PROXY')
@@ -576,13 +571,19 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip() if "GOOGLE_CLOUD_LOCATION" in os.environ else location
                         assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
 
-                        client = genai.Client(
-                            vertexai=env_use,
-                            project=env_proj,
-                            location=env_loc,
-                            http_options=types.HttpOptions(api_version=api_version),
-                            **client_options
-                        )
+                        client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url)
+                        if client_key not in cls._client_cache:
+                            cls._client_cache[client_key] = genai.Client(
+                                vertexai=env_use,
+                                project=env_proj,
+                                location=env_loc,
+                                http_options=types.HttpOptions(api_version=api_version),
+                                **client_options
+                            )
+                            print(f"[INFO] Created new genai.Client (vertexai_env)")
+                        else:
+                            print(f"[INFO] Reusing cached genai.Client (vertexai_env)")
+                        client = cls._client_cache[client_key]
 
                     except KeyError as e:
                         print(f"Missing required environment variable: {e}")
@@ -614,24 +615,35 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     else:
                         os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
 
-                    client = genai.Client(
-                        vertexai=True,
-                        api_key=config.get("api_key"),
-                        http_options=types.HttpOptions(api_version=api_version),
-                        **client_options
-                    )
+                    client_key = ("vertexai_express", config.get("api_key"), project, location, api_version, proxy_url)
+                    if client_key not in cls._client_cache:
+                        cls._client_cache[client_key] = genai.Client(
+                            vertexai=True,
+                            api_key=config.get("api_key"),
+                            http_options=types.HttpOptions(api_version=api_version),
+                            **client_options
+                        )
+                        print(f"[INFO] Created new genai.Client (vertexai_express)")
+                    else:
+                        print(f"[INFO] Reusing cached genai.Client (vertexai_express)")
+                    client = cls._client_cache[client_key]
 
                 else:
-                    client = genai.Client(
-                        api_key=config.get("api_key"),
-                        http_options=types.HttpOptions(api_version=api_version),
-                        **client_options
-                    )
+                    client_key = ("standard", config.get("api_key"), api_version, proxy_url)
+                    if client_key not in cls._client_cache:
+                        cls._client_cache[client_key] = genai.Client(
+                            api_key=config.get("api_key"),
+                            http_options=types.HttpOptions(api_version=api_version),
+                            **client_options
+                        )
+                        print(f"[INFO] Created new genai.Client (standard)")
+                    else:
+                        print(f"[INFO] Reusing cached genai.Client (standard)")
+                    client = cls._client_cache[client_key]
 
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-
 
             # Prepare contents (images + prompt)
             images_to_process = []
