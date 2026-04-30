@@ -133,10 +133,9 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
             inputs=[
                 IO.String.Input("api_key", multiline=False, default=""),
                 IO.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v1beta1", "v2beta"], default="v1alpha", tooltip="Select API version to use. v1alpha, v1beta and v2beta are Gemini API specific while v1beta1 is Vertex AI specific. Both can use v1"),
-                IO.Boolean.Input("use_vertexai_env", default=False, tooltip="Bypasses rest of config and uses Vertex AI environment variables if set"),
-                IO.Boolean.Input("vertexai_express", default=False),
-                IO.String.Input("vertexai_project", optional=True),
-                IO.String.Input("vertexai_location", optional=True),
+                IO.Boolean.Input("vertexai", default=False, tooltip="Enable Vertex AI / Gemini Enterprise Agent Platform mode. Uses ADC/Service Accounts and ignores api_key."),
+                IO.String.Input("vertexai_project", optional=True, tooltip="Google Cloud Project ID. Falls back to GOOGLE_CLOUD_PROJECT env var."),
+                IO.String.Input("vertexai_location", optional=True, tooltip="Google Cloud Region (e.g. us-central1). Falls back to GOOGLE_CLOUD_LOCATION env var."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -144,8 +143,14 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool, vertexai_project: str | None = "", vertexai_location: str | None = "") -> IO.NodeOutput:
-        config = {"api_key": api_key, "api_version": api_version, "use_vertexai_env": use_vertexai_env, "vertexai_express": vertexai_express, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
+    def execute(cls, api_key: str, api_version: str, vertexai: bool, vertexai_project: str | None = "", vertexai_location: str | None = "") -> IO.NodeOutput:
+        config = {
+            "api_key": api_key,
+            "api_version": api_version,
+            "vertexai": vertexai,
+            "vertexai_project": vertexai_project,
+            "vertexai_location": vertexai_location
+        }
         return IO.NodeOutput(config)
 
 
@@ -159,8 +164,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
-        "gemini-2.5-pro", "gemini-2.5-flash",
-        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-preview-05-20", "gemini-2.5-flash-preview-09-25",
+        "gemini-2.5-pro-preview-06-05", "gemini-2.5-pro-preview-05-06", "gemini-3-pro-preview", "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-flash-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
@@ -168,10 +174,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     ]
     IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
     MEDIA_RES_MODELS = [
-        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
-        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
-        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-3.1-flash-lite-preview",
-        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview",
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview",
         "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
 
@@ -185,7 +189,33 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input(
+                    "model",
+                    options=[
+                        "gemini-2.0-flash",
+                        "gemini-2.0-flash-lite",
+                        "gemini-2.5-pro",
+                        "gemini-2.5-flash",
+                        "gemini-2.5-flash-lite",
+                        "gemini-3-pro-preview",
+                        "gemini-3-flash-preview",
+                        "gemini-3.1-flash-lite-preview",
+                        "gemini-3.1-pro-preview",
+                        "gemini-2.5-flash-image-preview",
+                        "nano-banana-pro-preview",
+                        "gemini-pro-latest",
+                        "gemini-flash-latest",
+                        "gemini-flash-lite-latest",
+                        "gemini-2.5-flash-preview-04-17",
+                        "gemini-2.5-flash-preview-05-20",
+                        "gemini-2.5-flash-preview-09-25",
+                        "gemini-2.5-flash-lite-preview-06-17",
+                        "gemini-2.5-flash-lite-preview-09-25",
+                        "gemini-2.5-pro-preview-06-05",
+                        "gemini-2.5-pro-preview-05-06",
+                    ],
+                    default="gemini-2.5-flash",
+                ),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -554,91 +584,53 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     pass
 
             try:
-                vertexai_express = config.get("vertexai_express", False)
-                use_vertexai_env = config.get("use_vertexai_env", False)
+                # 1. Determine Mode (Vertex AI / Gemini Enterprise Agent Platform vs Developer / AI Studio)
+                vertexai_flag = config.get("vertexai", False)
+                env_vertexai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower()
+                is_vertexai = vertexai_flag or env_vertexai in ("true", "1")
+
                 api_version = config.get("api_version")
-                project = config.get("vertexai_project")
-                location = config.get("vertexai_location")
 
-                if use_vertexai_env:
-                    try:
-                        env_use = os.environ["GOOGLE_GENAI_USE_VERTEXAI"].strip() if "GOOGLE_GENAI_USE_VERTEXAI" in os.environ else "True"
-                        assert env_use, "GOOGLE_GENAI_USE_VERTEXAI is empty"
+                if is_vertexai:
+                    # Vertex AI Mode (Enterprise Agent Platform) - Uses ADC or Service Accounts
+                    project = (config.get("vertexai_project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip()
+                    location = (config.get("vertexai_location") or os.environ.get("GOOGLE_CLOUD_LOCATION", "")).strip()
 
-                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip() if "GOOGLE_CLOUD_PROJECT" in os.environ else project
-                        assert env_proj, "GOOGLE_CLOUD_PROJECT is empty"
+                    if not project or not location:
+                        missing = []
+                        if not project: missing.append("Project ID (GOOGLE_CLOUD_PROJECT)")
+                        if not location: missing.append("Location (GOOGLE_CLOUD_LOCATION)")
+                        err_msg = f"Missing required Vertex AI parameters: {', '.join(missing)}"
+                        print(f"[ERROR] {err_msg}")
+                        return IO.NodeOutput(err_msg, cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
-                        env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip() if "GOOGLE_CLOUD_LOCATION" in os.environ else location
-                        assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
-
-                        client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url)
-                        if client_key not in cls._client_cache:
-                            cls._client_cache[client_key] = genai.Client(
-                                vertexai=env_use,
-                                project=env_proj,
-                                location=env_loc,
-                                http_options=types.HttpOptions(api_version=api_version),
-                                **client_options
-                            )
-                            print(f"[INFO] Created new genai.Client (vertexai_env)")
-                        else:
-                            print(f"[INFO] Reusing cached genai.Client (vertexai_env)")
-                        client = cls._client_cache[client_key]
-
-                    except KeyError as e:
-                        print(f"Missing required environment variable: {e}")
-                        return IO.NodeOutput(f"Missing environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-
-                    except AssertionError as e:
-                        print(f"Error: {e}")
-                        return IO.NodeOutput(f"Invalid environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-
-                elif vertexai_express:
-
-                    if not project:
-                        try:
-                            project = os.environ["GOOGLE_CLOUD_PROJECT"].strip()
-                            assert project, "GOOGLE_CLOUD_PROJECT is empty"
-                        except KeyError:
-                            print("Missing required environment variable: GOOGLE_CLOUD_PROJECT")
-                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_PROJECT", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-                    else:
-                        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project)
-
-                    if not location:
-                        try:
-                            location = os.environ["GOOGLE_CLOUD_LOCATION"].strip()
-                            assert location, "GOOGLE_CLOUD_LOCATION is empty"
-                        except KeyError:
-                            print("Missing required environment variable: GOOGLE_CLOUD_LOCATION")
-                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_LOCATION", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-                    else:
-                        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
-
-                    client_key = ("vertexai_express", config.get("api_key"), project, location, api_version, proxy_url)
+                    client_key = ("vertexai", project, location, api_version, proxy_url)
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
                             vertexai=True,
-                            api_key=config.get("api_key"),
+                            project=project,
+                            location=location,
                             http_options=types.HttpOptions(api_version=api_version),
                             **client_options
                         )
-                        print(f"[INFO] Created new genai.Client (vertexai_express)")
+                        print(f"[INFO] Created new genai.Client (Vertex AI Mode)")
                     else:
-                        print(f"[INFO] Reusing cached genai.Client (vertexai_express)")
+                        print(f"[INFO] Reusing cached genai.Client (Vertex AI Mode)")
                     client = cls._client_cache[client_key]
 
                 else:
-                    client_key = ("standard", config.get("api_key"), api_version, proxy_url)
+                    # Developer Mode (AI Studio) - Uses API Key
+                    api_key = config.get("api_key")
+                    client_key = ("developer", api_key, api_version, proxy_url)
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
-                            api_key=config.get("api_key"),
+                            api_key=api_key,
                             http_options=types.HttpOptions(api_version=api_version),
                             **client_options
                         )
-                        print(f"[INFO] Created new genai.Client (standard)")
+                        print(f"[INFO] Created new genai.Client (Developer Mode)")
                     else:
-                        print(f"[INFO] Reusing cached genai.Client (standard)")
+                        print(f"[INFO] Reusing cached genai.Client (Developer Mode)")
                     client = cls._client_cache[client_key]
 
             except Exception as e:
