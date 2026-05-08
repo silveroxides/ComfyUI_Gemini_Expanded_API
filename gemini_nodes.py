@@ -581,8 +581,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 **client_options
                             )
                             print(f"[INFO] Created new genai.Client (vertexai_env)")
+                            is_new_client = True
                         else:
                             print(f"[INFO] Reusing cached genai.Client (vertexai_env)")
+                            is_new_client = False
                         client = cls._client_cache[client_key]
 
                     except KeyError as e:
@@ -624,8 +626,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             **client_options
                         )
                         print(f"[INFO] Created new genai.Client (vertexai_express)")
+                        is_new_client = True
                     else:
                         print(f"[INFO] Reusing cached genai.Client (vertexai_express)")
+                        is_new_client = False
                     client = cls._client_cache[client_key]
 
                 else:
@@ -637,9 +641,19 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             **client_options
                         )
                         print(f"[INFO] Created new genai.Client (standard)")
+                        is_new_client = True
                     else:
                         print(f"[INFO] Reusing cached genai.Client (standard)")
+                        is_new_client = False
                     client = cls._client_cache[client_key]
+
+                if is_new_client:
+                    try:
+                        if hasattr(client, '_api_client') and hasattr(client._api_client, '_access_token'):
+                            print("[INFO] Pre-fetching auth token to avoid timeout interference...")
+                            client._api_client._access_token()
+                    except Exception as auth_e:
+                        print(f"[WARNING] Pre-auth check failed (will attempt during generation): {auth_e}")
 
             except Exception as e:
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
@@ -858,8 +872,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         final_actual_seed = actual_seed if actual_seed is not None else 0
 
+        is_success = not text_output.startswith("API call/processing error:") and not text_output.startswith("Gemini API request/processing timed out")
+
         # Cache the result
-        if use_seed:
+        if use_seed and is_success:
             try:
                 cls._cache[fingerprint] = (text_output, image_tensor, final_actual_seed)
             except Exception:
