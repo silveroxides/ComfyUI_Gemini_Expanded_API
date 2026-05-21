@@ -160,19 +160,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     THINKING_MODELS = [
         "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
         "gemini-2.5-pro", "gemini-2.5-flash",
-        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-    "gemini-3-pro-preview", "gemini-3-flash-preview"
+    "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.5-flash"
     ]
     IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
     MEDIA_RES_MODELS = [
-        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21",
-        "gemini-2.0-flash-thinking-exp-1219", "gemini-2.5-pro",
-        "gemini-2.5-pro-preview-05-06", "gemini-2.5-flash", "gemini-3.1-flash-lite-preview",
-        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
-        "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+        "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
 
     @classmethod
@@ -185,7 +182,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
