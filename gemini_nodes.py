@@ -158,17 +158,17 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     # Define model lists centrally to ensure consistency between cache logic and execution logic
     THINKING_MODELS = [
-        "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
-        "gemini-2.5-pro", "gemini-2.5-flash",
-        "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-1.5-pro-002", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
+        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25",
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-    "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.5-flash"
+    "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash"
     ]
     IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
     MEDIA_RES_MODELS = [
-        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
         "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
 
@@ -182,7 +182,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -418,7 +418,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
-        G3Pro = ["gemini-3.1-pro-preview", "gemini-3-pro-preview"]
+        G3Pro = ["gemini-3.1-pro-preview"]
         # Modified: Added check for thinking_level != "None"
         if model in G3Pro and thinking_level is not None and thinking_level != "None":
             return types.GenerateContentConfig(
