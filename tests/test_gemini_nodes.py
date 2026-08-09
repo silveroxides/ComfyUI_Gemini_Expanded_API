@@ -4,6 +4,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import google.auth
+import pytest
 import torch
 from PIL import Image
 
@@ -27,10 +28,55 @@ def _execute_kwargs(config):
     }
 
 
+def _config(**overrides):
+    config = {
+        "api_key": "",
+        "api_version": "v1",
+        "use_vertexai_env": False,
+        "vertexai_express": False,
+        "vertexai_project": "",
+        "vertexai_location": "",
+        "google_application_credentials": "",
+    }
+    config.update(overrides)
+    return config
+
+
+def _install_success_client(monkeypatch, captured):
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            part = SimpleNamespace(text="ok", inline_data=None)
+            content = SimpleNamespace(parts=[part])
+            return SimpleNamespace(candidates=[SimpleNamespace(content=content)])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+
+
 def test_timeout_fallback_is_last_input():
     schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
 
     assert schema.inputs[-1].id == "timeout_fallback_text"
+
+
+def test_vertex_config_socket_ids_remain_stable():
+    schema = gemini_nodes.SSL_GeminiAPIKeyConfig.define_schema()
+
+    assert [input_.id for input_ in schema.inputs] == [
+        "api_key",
+        "api_version",
+        "use_vertexai_env",
+        "vertexai_express",
+        "vertexai_project",
+        "vertexai_location",
+        "google_application_credentials",
+    ]
 
 
 def test_image_inputs_use_clean_autogrow_socket_ids():
@@ -120,6 +166,7 @@ def test_all_ordered_images_are_sent_to_gemini_2_and_3_before_prompt(monkeypatch
         assert output[0] == "ok"
         assert_ordered_parts()
 
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
     monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
@@ -191,6 +238,7 @@ def test_api_key_is_hashed_in_fingerprint():
 
 
 def test_false_vertex_environment_value_is_rejected(monkeypatch):
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
     monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "false")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
@@ -212,8 +260,8 @@ def test_false_vertex_environment_value_is_rejected(monkeypatch):
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**_execute_kwargs(config))
 
     assert output[0] == (
-        "Invalid Vertex AI configuration: GOOGLE_GENAI_USE_VERTEXAI must be enabled "
-        "when use_vertexai_env is true"
+        "Invalid Enterprise/Vertex AI configuration: GOOGLE_GENAI_USE_ENTERPRISE or "
+        "GOOGLE_GENAI_USE_VERTEXAI must be enabled when use_vertexai_env is true"
     )
 
 
@@ -223,6 +271,7 @@ def test_adc_path_is_loaded_and_passed_to_vertex_client(monkeypatch, tmp_path):
     credentials = object()
     captured = {}
 
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
     monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
@@ -259,9 +308,113 @@ def test_adc_path_is_loaded_and_passed_to_vertex_client(monkeypatch, tmp_path):
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**_execute_kwargs(config))
 
     assert output[0] == "ok"
-    assert captured["vertexai"] is True
+    assert captured["enterprise"] is True
+    assert "vertexai" not in captured
     assert captured["credentials"] is credentials
     assert captured["project"] == "credentials-project"
+
+
+def test_enterprise_environment_takes_precedence_over_legacy_vertex(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "true")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "false")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    _install_success_client(monkeypatch, captured)
+
+    with pytest.warns(UserWarning, match="GOOGLE_GENAI_USE_ENTERPRISE takes precedence"):
+        output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+            **_execute_kwargs(_config(use_vertexai_env=True))
+        )
+
+    assert output[0] == "ok"
+    assert captured["enterprise"] is True
+    assert captured["project"] == "test-project"
+    assert captured["location"] == "global"
+
+
+def test_vertex_environment_mode_defaults_to_enterprise_when_selector_is_absent(monkeypatch):
+    captured = {}
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    _install_success_client(monkeypatch, captured)
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config(use_vertexai_env=True))
+    )
+
+    assert output[0] == "ok"
+    assert captured["enterprise"] is True
+
+
+def test_malformed_enterprise_environment_value_is_rejected(monkeypatch):
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "yes")
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    monkeypatch.setattr(
+        gemini_nodes.genai,
+        "Client",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("Client must not be created")),
+    )
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config(use_vertexai_env=True))
+    )
+
+    assert output[0] == (
+        "Invalid Enterprise/Vertex AI configuration: "
+        "GOOGLE_GENAI_USE_ENTERPRISE must be true, false, 1, or 0"
+    )
+
+
+def test_enterprise_express_requires_only_api_key(monkeypatch):
+    captured = {}
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    _install_success_client(monkeypatch, captured)
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config(api_key="express-key", vertexai_express=True))
+    )
+
+    assert output[0] == "ok"
+    assert captured["enterprise"] is True
+    assert captured["api_key"] == "express-key"
+    assert "project" not in captured
+    assert "location" not in captured
+
+
+def test_proxy_uses_sdk_http_options_without_mutating_environment(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("HTTP_PROXY", "http://existing-proxy:9000")
+    _install_success_client(monkeypatch, captured)
+
+    kwargs = _execute_kwargs(_config(api_key="test-key"))
+    kwargs.update(use_proxy=True, proxy_host="proxy.example", proxy_port=8080)
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert output[0] == "ok"
+    assert captured["http_options"].client_args == {
+        "proxy": "http://proxy.example:8080"
+    }
+    assert gemini_nodes.os.environ["HTTP_PROXY"] == "http://existing-proxy:9000"
+
+
+def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
+    schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
+    model_input = next(input_ for input_ in schema.inputs if input_.id == "model")
+
+    for model in (
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-lite-image",
+        "gemini-3-pro-image",
+        "gemini-2.5-flash-image-preview",
+    ):
+        assert model in model_input.options
 
 
 def test_timeout_returns_custom_fallback_without_caching(monkeypatch):

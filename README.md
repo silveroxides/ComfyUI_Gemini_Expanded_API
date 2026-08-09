@@ -32,7 +32,7 @@ Special Note: Regarding the error [ERROR]API call error: 'NoneType' object has n
 
 ## How to Use
 
-### 1. Configure API Key or Configure Vertex AI
+### 1. Configure Gemini API or Enterprise/Vertex AI
 
 ### Option A(Gemini API)
 
@@ -41,12 +41,13 @@ First, you need to obtain a Google Gemini API key:
 2. Create an API key (In Google Cloud Console it is recommended to set key restriction to the Generative Language API)
 3. In ComfyUI, locate and use the `Configure Gemini API Key` node to enter your API key.
 
-### Option B(Vertex AI) but this is a bit complicated and a guide would be too verbose here
-1. But start by visiting [Google Cloud Console Vertex AI API](https://console.cloud.google.com/apis/api/aiplatform.googleapis.com/overview) and Enable it.
+### Option B (Gemini Enterprise Agent Platform, formerly Vertex AI)
+1. Start by visiting [Google Cloud Console Vertex AI API](https://console.cloud.google.com/apis/api/aiplatform.googleapis.com/overview) and enable it.
 2. Visit the [Vertex AI Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) and select a Google Gemini model and then "view code" button.
-3. Read the instructions for chosen model at "Try (Python)" for the environment variable option or "Try while using express mode (Python)" for API key (Currently unsure if API here is working correctly)
-4. Set environment variables before launching: `GOOGLE_CLOUD_PROJECT=your-project-id`, `GOOGLE_CLOUD_LOCATION=global` and `GOOGLE_GENAI_USE_VERTEXAI=True` for variable option.
+3. Read the instructions for the chosen model at "Try (Python)" for environment authentication or "Try while using express mode (Python)" for API-key authentication.
+4. For environment authentication, set `GOOGLE_CLOUD_PROJECT=your-project-id`, `GOOGLE_CLOUD_LOCATION=global`, and `GOOGLE_GENAI_USE_ENTERPRISE=true` before launching ComfyUI. Existing installations may continue using `GOOGLE_GENAI_USE_VERTEXAI=true`; the node supports both names, with `GOOGLE_GENAI_USE_ENTERPRISE` taking precedence if both are set.
 5. In ComfyUI, locate and use the `Configure Gemini API Key` node and set `use_vertexai_env` to `true`.
+6. For Enterprise express mode, enter its API key and enable `vertexai_express`; project and location are not required for this mode.
 
 ### 2. Text Generation
 

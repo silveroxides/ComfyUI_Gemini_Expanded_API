@@ -16,34 +16,11 @@ import traceback
 import threading
 import queue
 import sys
-import importlib
 import subprocess
 import random
 import hashlib
+import warnings
 from typing import Any, Tuple
-
-def check_and_install_dependencies():
-    required_packages = {
-        'requests': 'requests',
-        'pysocks': 'PySocks',
-    }
-
-    missing_packages = []
-    for module_name, package_name in required_packages.items():
-        try:
-            importlib.import_module(module_name)
-        except ImportError:
-            missing_packages.append(package_name)
-
-    if missing_packages:
-        print(f"[WARNING] Missing required dependencies: {', '.join(missing_packages)}.")
-        print(f"[INFO] Please install them using: pip install {' '.join(missing_packages)}")
-        print(f"[INFO] Alternatively, install all requirements: pip install -r requirements.txt")
-
-try:
-    check_and_install_dependencies()
-except Exception as e:
-    print(f"[WARNING] Error checking dependencies: {str(e)}")
 
 class GetKeyAPI(IO.ComfyNode):
     @classmethod
@@ -133,7 +110,7 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
             inputs=[
                 IO.String.Input("api_key", multiline=False, default=""),
                 IO.Combo.Input("api_version", options=["v1", "v1alpha", "v1beta", "v1beta1", "v2beta"], default="v1alpha", tooltip="Select API version to use. v1alpha, v1beta and v2beta are Gemini API specific while v1beta1 is Vertex AI specific. Both can use v1"),
-                IO.Boolean.Input("use_vertexai_env", default=False, tooltip="Bypasses rest of config and uses Vertex AI environment variables if set"),
+                IO.Boolean.Input("use_vertexai_env", default=False, tooltip="Uses Gemini Enterprise Agent Platform (formerly Vertex AI) with GOOGLE_GENAI_USE_ENTERPRISE or the legacy GOOGLE_GENAI_USE_VERTEXAI environment variable."),
                 IO.Boolean.Input("vertexai_express", default=False),
                 IO.String.Input("vertexai_project", optional=True),
                 IO.String.Input("vertexai_location", optional=True),
@@ -171,13 +148,17 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     THINKING_MODELS = [
         "gemini-1.5-pro-002", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25",
-        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash"
+    "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"
     ]
-    IMAGE_MODELS = ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image", "gemini-3-pro-image-preview", "nano-banana-pro-preview"]
+    IMAGE_MODELS = [
+        "gemini-2.5-flash-image-preview", "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image",
+        "gemini-3-pro-image-preview", "gemini-3-pro-image", "nano-banana-pro-preview",
+    ]
     MEDIA_RES_MODELS = [
         "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
         "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
@@ -199,7 +180,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash-image-preview", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash-image-preview", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -431,20 +412,49 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return actual_seed
 
     @classmethod
-    def _setup_proxy_env(cls, proxy_host, proxy_port):
+    def _build_proxy_url(cls, proxy_host, proxy_port):
         if not proxy_host.startswith(('http://', 'https://')):
             proxy_url = f"http://{proxy_host}:{proxy_port}"
         else:
             proxy_url = f"{proxy_host}:{proxy_port}"
 
-        os.environ['HTTP_PROXY'] = proxy_url
-        os.environ['HTTPS_PROXY'] = proxy_url
-        os.environ['http_proxy'] = proxy_url
-        os.environ['https_proxy'] = proxy_url
-        os.environ['REQUESTS_CA_BUNDLE'] = ''
-
         print(f"[INFO] Proxy enabled: {proxy_url}")
         return proxy_url
+
+    @staticmethod
+    def _parse_boolean_environment_variable(name: str) -> bool | None:
+        value = os.environ.get(name)
+        if value is None:
+            return None
+
+        normalized = value.strip().lower()
+        if normalized not in {"true", "1", "false", "0"}:
+            raise ValueError(f"{name} must be true, false, 1, or 0")
+        return normalized in {"true", "1"}
+
+    @classmethod
+    def _resolve_enterprise_environment(cls) -> bool:
+        enterprise = cls._parse_boolean_environment_variable("GOOGLE_GENAI_USE_ENTERPRISE")
+        legacy_vertex = cls._parse_boolean_environment_variable("GOOGLE_GENAI_USE_VERTEXAI")
+
+        if enterprise is not None and legacy_vertex is not None and enterprise != legacy_vertex:
+            warnings.warn(
+                "GOOGLE_GENAI_USE_ENTERPRISE and GOOGLE_GENAI_USE_VERTEXAI conflict; "
+                "GOOGLE_GENAI_USE_ENTERPRISE takes precedence.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        if enterprise is not None:
+            return enterprise
+        if legacy_vertex is not None:
+            return legacy_vertex
+        return True
+
+    @staticmethod
+    def _build_http_options(api_version: str, proxy_url: str | None):
+        client_args = {"proxy": proxy_url} if proxy_url else None
+        return types.HttpOptions(api_version=api_version, client_args=client_args)
 
     @classmethod
     def _build_generate_content_config(cls, model, temperature, top_p, top_k, max_output_tokens, seed,
@@ -532,12 +542,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
             return IO.NodeOutput(cached_text, cached_image, cached_seed)
 
-        # --- keep most of the original implementation but converted to classmethod usage ---
-        original_http_proxy = os.environ.get('HTTP_PROXY')
-        original_https_proxy = os.environ.get('HTTPS_PROXY')
-        original_http_proxy_lower = os.environ.get('http_proxy')
-        original_https_proxy_lower = os.environ.get('https_proxy')
-
         print(f"[INFO] Starting generation, model: {model}, temperature: {temperature}")
 
         padded_prompt = prompt
@@ -562,12 +566,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[INFO] Using cached successful gemini seed {cached_gemini_seed} for input seed {input_seed}")
                 actual_seed = cached_gemini_seed
 
-        # Flatten and simplify nested try/except blocks to ensure correct pairing
-        original_http_proxy = os.environ.get('HTTP_PROXY')
-        original_https_proxy = os.environ.get('HTTPS_PROXY')
-        original_http_proxy_lower = os.environ.get('http_proxy')
-        original_https_proxy_lower = os.environ.get('https_proxy')
-
         text_output = ""
         image_tensor = cls.generate_empty_image()
         proxy_url: str | None = None
@@ -575,37 +573,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         try:
             if use_proxy:
-                proxy_url = cls._setup_proxy_env(proxy_host, proxy_port)
-
-            # Initialize Gemini client
-            client_options = {}
-            if use_proxy:
-                try:
-                    import google.api_core.http_client  # type: ignore[import]
-                    import google.auth.transport.requests  # type: ignore[import]
-                    import requests
-                    from requests.adapters import HTTPAdapter
-
-                    class ProxyAdapter(HTTPAdapter):
-                        def __init__(self, proxy_url, **kwargs):
-                            self.proxy_url = proxy_url
-                            super().__init__(**kwargs)
-
-                        def add_headers(self, request, **kwargs):
-                            super().add_headers(request, **kwargs)
-
-                    session = requests.Session()
-                    proxies = {"http": str(proxy_url), "https": str(proxy_url)}
-                    session.proxies.update(proxies)
-                    adapter = ProxyAdapter(proxy_url, max_retries=1)
-                    session.mount('http://', adapter)
-                    session.mount('https://', adapter)
-                    session.verify = False
-                    http_client = google.api_core.http_client.RequestsHttpClient(session=session)
-                    client_options["http_client"] = http_client
-                except Exception:
-                    # best-effort proxy HTTP client setup; fall back if imports fail
-                    pass
+                proxy_url = cls._build_proxy_url(proxy_host, proxy_port)
 
             try:
                 vertexai_express = config.get("vertexai_express", False)
@@ -614,15 +582,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 project = config.get("vertexai_project")
                 location = config.get("vertexai_location")
                 credentials_path = config.get("google_application_credentials")
+                http_options = cls._build_http_options(api_version, proxy_url)
 
                 if use_vertexai_env:
                     try:
-                        env_use_value = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "true").strip().lower()
-                        if env_use_value not in {"true", "1", "false", "0"}:
-                            raise ValueError("GOOGLE_GENAI_USE_VERTEXAI must be true, false, 1, or 0")
-                        env_use = env_use_value in {"true", "1"}
+                        env_use = cls._resolve_enterprise_environment()
                         if not env_use:
-                            raise ValueError("GOOGLE_GENAI_USE_VERTEXAI must be enabled when use_vertexai_env is true")
+                            raise ValueError(
+                                "GOOGLE_GENAI_USE_ENTERPRISE or GOOGLE_GENAI_USE_VERTEXAI "
+                                "must be enabled when use_vertexai_env is true"
+                            )
 
                         credentials = None
                         credentials_cache_key = None
@@ -648,12 +617,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url, credentials_cache_key)
                         if client_key not in cls._client_cache:
                             cls._client_cache[client_key] = genai.Client(
-                                vertexai=env_use,
+                                enterprise=env_use,
                                 credentials=credentials,
                                 project=env_proj,
                                 location=env_loc,
-                                http_options=types.HttpOptions(api_version=api_version),
-                                **client_options
+                                http_options=http_options,
                             )
                             print(f"[INFO] Created new genai.Client (vertexai_env)")
                             is_new_client = True
@@ -672,39 +640,23 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
                     except ValueError as e:
                         print(f"Error: {e}")
-                        return IO.NodeOutput(f"Invalid Vertex AI configuration: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+                        return IO.NodeOutput(f"Invalid Enterprise/Vertex AI configuration: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
                 elif vertexai_express:
-
-                    if not project:
-                        try:
-                            project = os.environ["GOOGLE_CLOUD_PROJECT"].strip()
-                            assert project, "GOOGLE_CLOUD_PROJECT is empty"
-                        except KeyError:
-                            print("Missing required environment variable: GOOGLE_CLOUD_PROJECT")
-                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_PROJECT", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-                    else:
-                        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project)
-
-                    if not location:
-                        try:
-                            location = os.environ["GOOGLE_CLOUD_LOCATION"].strip()
-                            assert location, "GOOGLE_CLOUD_LOCATION is empty"
-                        except KeyError:
-                            print("Missing required environment variable: GOOGLE_CLOUD_LOCATION")
-                            return IO.NodeOutput("Missing environment variable: GOOGLE_CLOUD_LOCATION", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
-                    else:
-                        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
-
                     api_key = config.get("api_key")
+                    if not api_key:
+                        return IO.NodeOutput(
+                            "Invalid Enterprise express configuration: API key is required",
+                            cls.generate_empty_image(),
+                            actual_seed if actual_seed is not None else 0,
+                        )
                     api_key_hash = hashlib.sha256(str(api_key).encode("utf-8")).hexdigest() if api_key else None
-                    client_key = ("vertexai_express", api_key_hash, project, location, api_version, proxy_url)
+                    client_key = ("vertexai_express", api_key_hash, api_version, proxy_url)
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
-                            vertexai=True,
+                            enterprise=True,
                             api_key=api_key,
-                            http_options=types.HttpOptions(api_version=api_version),
-                            **client_options
+                            http_options=http_options,
                         )
                         print(f"[INFO] Created new genai.Client (vertexai_express)")
                         is_new_client = True
@@ -720,8 +672,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
                             api_key=api_key,
-                            http_options=types.HttpOptions(api_version=api_version),
-                            **client_options
+                            http_options=http_options,
                         )
                         print(f"[INFO] Created new genai.Client (standard)")
                         is_new_client = True
@@ -968,43 +919,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[INFO] Cached successful gemini seed {final_actual_seed} for input seed {input_seed}")
 
 
-        try:
-            return IO.NodeOutput(text_output, image_tensor, final_actual_seed)
-        finally:
-            if original_http_proxy:
-                os.environ['HTTP_PROXY'] = original_http_proxy
-            else:
-                if 'HTTP_PROXY' in os.environ:
-                    os.environ.pop('HTTP_PROXY')
-
-            if original_https_proxy:
-                os.environ['HTTPS_PROXY'] = original_https_proxy
-            else:
-                if 'HTTPS_PROXY' in os.environ:
-                    os.environ.pop('HTTPS_PROXY')
-
-            if original_http_proxy_lower:
-                os.environ['http_proxy'] = original_http_proxy_lower
-            else:
-                if 'http_proxy' in os.environ:
-                    os.environ.pop('http_proxy')
-
-            if original_https_proxy_lower:
-                os.environ['https_proxy'] = original_https_proxy_lower
-            else:
-                if 'https_proxy' in os.environ:
-                    os.environ.pop('https_proxy')
-
-            if 'REQUESTS_CA_BUNDLE' in os.environ:
-                os.environ.pop('REQUESTS_CA_BUNDLE')
-
-            try:
-                import requests
-                if hasattr(requests, 'Session'):
-                    clean_session = requests.Session()
-                    if hasattr(requests, 'session'):
-                        requests.session = lambda: clean_session
-            except:
-                pass
+        return IO.NodeOutput(text_output, image_tensor, final_actual_seed)
 
 # V3 uses ComfyExtension entrypoint in __init__.py to expose nodes
