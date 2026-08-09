@@ -137,6 +137,7 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
                 IO.Boolean.Input("vertexai_express", default=False),
                 IO.String.Input("vertexai_project", optional=True),
                 IO.String.Input("vertexai_location", optional=True),
+                IO.String.Input("google_application_credentials", default="", optional=True, multiline=False, tooltip="Optional absolute path to an application default credentials JSON file for Vertex AI."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -144,8 +145,18 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool, vertexai_project: str | None = "", vertexai_location: str | None = "") -> IO.NodeOutput:
-        config = {"api_key": api_key, "api_version": api_version, "use_vertexai_env": use_vertexai_env, "vertexai_express": vertexai_express, "vertexai_project": vertexai_project, "vertexai_location": vertexai_location}
+    def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool,
+                vertexai_project: str | None = "", vertexai_location: str | None = "",
+                google_application_credentials: str | None = "") -> IO.NodeOutput:
+        config = {
+            "api_key": api_key,
+            "api_version": api_version,
+            "use_vertexai_env": use_vertexai_env,
+            "vertexai_express": vertexai_express,
+            "vertexai_project": vertexai_project,
+            "vertexai_location": vertexai_location,
+            "google_application_credentials": google_application_credentials,
+        }
         return IO.NodeOutput(config)
 
 
@@ -174,6 +185,12 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     @classmethod
     def define_schema(cls) -> IO.Schema:
+        image_names = [f"image_{index}" for index in range(1, 101)]
+        image_template = IO.Autogrow.TemplateNames(
+            IO.Image.Input("image_1", optional=True),
+            names=image_names,
+            min=0,
+        )
         return IO.Schema(
             node_id="SSL_GeminiTextPrompt",
             display_name="Expanded Gemini Text/Image",
@@ -191,8 +208,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], default="None"),
                 IO.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
                 IO.Int.Input("thinking_budget", default=0, min=-1, max=24576, step=1, tooltip="0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"),
-                IO.Image.Input("input_image", optional=True),
-                IO.Image.Input("input_image_2", optional=True),
+                IO.Autogrow.Input(
+                    "image_inputs",
+                    template=image_template,
+                    optional=True,
+                    tooltip=(
+                        "Ordered Gemini image parts growing from image_1 through image_100. Images inside a batch "
+                        "are sent consecutively before the next socket. Provider request-size and model-specific "
+                        "reference limits still apply."
+                    ),
+                ),
                 IO.Boolean.Input("use_proxy", default=False),
                 IO.String.Input("proxy_host", default="127.0.0.1"),
                 IO.Int.Input("proxy_port", default=7890, min=1, max=65535),
@@ -204,6 +229,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
+                IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
             ],
             outputs=[
                 IO.String.Output("text"),
@@ -271,9 +297,32 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return tensor
 
     @classmethod
+    def _flatten_image_inputs(cls, image_inputs: IO.Autogrow.Type | None):
+        if not image_inputs:
+            return []
+
+        def image_index(name):
+            match = re.fullmatch(r"image_(\d+)", name)
+            return int(match.group(1)) if match else 101
+
+        flattened = []
+        for _, image_batch in sorted(
+            image_inputs.items(), key=lambda item: (image_index(item[0]), item[0])
+        ):
+            if image_batch is None:
+                continue
+            if not torch.is_tensor(image_batch) or image_batch.ndim != 4:
+                raise ValueError("Gemini image inputs must be BHWC image tensors.")
+            flattened.extend(
+                image_batch[index : index + 1]
+                for index in range(image_batch.shape[0])
+            )
+        return flattened
+
+    @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                                              include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
-                                             input_image=None, input_image_2=None,
+                                             image_inputs: IO.Autogrow.Type | None = None,
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3):
@@ -288,8 +337,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[WARNING] Cache hashing failed for image: {e}")
                 return "Error"
 
-        image_1_hash = get_tensor_hash(input_image)
-        image_2_hash = get_tensor_hash(input_image_2)
+        image_hashes = tuple(
+            get_tensor_hash(image)
+            for image in cls._flatten_image_inputs(image_inputs)
+        )
 
         # 2. Determine Effective Parameters based on Model
         # This ensures we don't cache-miss if an irrelevant parameter changes
@@ -319,8 +370,13 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         # If none of the above, all effective thinking/image params remain default/ignored
 
+        sanitized_config = dict(config)
+        api_key = sanitized_config.get("api_key")
+        if api_key:
+            sanitized_config["api_key"] = f"sha256:{hashlib.sha256(str(api_key).encode('utf-8')).hexdigest()}"
+
         fingerprint = (
-            str(config),
+            str(sanitized_config),
             prompt,
             system_instruction,
             model,
@@ -334,8 +390,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             eff_thinking_budget,   # EFFECTIVE thinking_budget
             use_seed,
             int(seed) if use_seed else 0, # Only use seed in cache if use_seed is True
-            image_1_hash,
-            image_2_hash,
+            image_hashes,
             bool(use_proxy),
             str(proxy_host),
             int(proxy_port),
@@ -456,16 +511,17 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     @classmethod
     def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
-                include_images, aspect_ratio, bypass_mode, thinking_budget, input_image=None, input_image_2=None,
+                include_images, aspect_ratio, bypass_mode, thinking_budget,
+                image_inputs: IO.Autogrow.Type | None = None,
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None,
-                retry_pattern="", max_retries=3) -> IO.NodeOutput:
+                retry_pattern="", max_retries=3, timeout_fallback_text="") -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiTextPrompt execute called, model: {model}")
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
-            input_image, input_image_2,
+            image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
             include_thoughts, thinking_level, media_resolution,
             retry_pattern, max_retries
@@ -515,6 +571,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         text_output = ""
         image_tensor = cls.generate_empty_image()
         proxy_url: str | None = None
+        timed_out = False
 
         try:
             if use_proxy:
@@ -556,22 +613,43 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 api_version = config.get("api_version")
                 project = config.get("vertexai_project")
                 location = config.get("vertexai_location")
+                credentials_path = config.get("google_application_credentials")
 
                 if use_vertexai_env:
                     try:
-                        env_use = os.environ["GOOGLE_GENAI_USE_VERTEXAI"].strip() if "GOOGLE_GENAI_USE_VERTEXAI" in os.environ else "True"
-                        assert env_use, "GOOGLE_GENAI_USE_VERTEXAI is empty"
+                        env_use_value = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "true").strip().lower()
+                        if env_use_value not in {"true", "1", "false", "0"}:
+                            raise ValueError("GOOGLE_GENAI_USE_VERTEXAI must be true, false, 1, or 0")
+                        env_use = env_use_value in {"true", "1"}
+                        if not env_use:
+                            raise ValueError("GOOGLE_GENAI_USE_VERTEXAI must be enabled when use_vertexai_env is true")
 
-                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip() if "GOOGLE_CLOUD_PROJECT" in os.environ else project
+                        credentials = None
+                        credentials_cache_key = None
+                        credential_project = None
+                        if credentials_path:
+                            import google.auth
+
+                            absolute_credentials_path = os.path.abspath(os.path.expanduser(credentials_path))
+                            if not os.path.isfile(absolute_credentials_path):
+                                raise ValueError(f"Application default credentials file not found: {absolute_credentials_path}")
+                            credentials, credential_project = google.auth.load_credentials_from_file(
+                                absolute_credentials_path,
+                                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                            )
+                            credentials_cache_key = absolute_credentials_path
+
+                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip() if "GOOGLE_CLOUD_PROJECT" in os.environ else (project or credential_project)
                         assert env_proj, "GOOGLE_CLOUD_PROJECT is empty"
 
                         env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip() if "GOOGLE_CLOUD_LOCATION" in os.environ else location
                         assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
 
-                        client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url)
+                        client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url, credentials_cache_key)
                         if client_key not in cls._client_cache:
                             cls._client_cache[client_key] = genai.Client(
                                 vertexai=env_use,
+                                credentials=credentials,
                                 project=env_proj,
                                 location=env_loc,
                                 http_options=types.HttpOptions(api_version=api_version),
@@ -591,6 +669,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     except AssertionError as e:
                         print(f"Error: {e}")
                         return IO.NodeOutput(f"Invalid environment variable: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+
+                    except ValueError as e:
+                        print(f"Error: {e}")
+                        return IO.NodeOutput(f"Invalid Vertex AI configuration: {e}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
                 elif vertexai_express:
 
@@ -614,11 +696,13 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     else:
                         os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
 
-                    client_key = ("vertexai_express", config.get("api_key"), project, location, api_version, proxy_url)
+                    api_key = config.get("api_key")
+                    api_key_hash = hashlib.sha256(str(api_key).encode("utf-8")).hexdigest() if api_key else None
+                    client_key = ("vertexai_express", api_key_hash, project, location, api_version, proxy_url)
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
                             vertexai=True,
-                            api_key=config.get("api_key"),
+                            api_key=api_key,
                             http_options=types.HttpOptions(api_version=api_version),
                             **client_options
                         )
@@ -630,10 +714,12 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     client = cls._client_cache[client_key]
 
                 else:
-                    client_key = ("standard", config.get("api_key"), api_version, proxy_url)
+                    api_key = config.get("api_key")
+                    api_key_hash = hashlib.sha256(str(api_key).encode("utf-8")).hexdigest() if api_key else None
+                    client_key = ("standard", api_key_hash, api_version, proxy_url)
                     if client_key not in cls._client_cache:
                         cls._client_cache[client_key] = genai.Client(
-                            api_key=config.get("api_key"),
+                            api_key=api_key,
                             http_options=types.HttpOptions(api_version=api_version),
                             **client_options
                         )
@@ -657,11 +743,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
             # Prepare contents (images + prompt)
-            images_to_process = []
-            if input_image is not None:
-                images_to_process.append(input_image)
-            if input_image_2 is not None:
-                images_to_process.append(input_image_2)
+            images_to_process = cls._flatten_image_inputs(image_inputs)
 
             if images_to_process:
                 try:
@@ -859,7 +941,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
 
                 except queue.Empty:
-                    text_output = f"Gemini API request/processing timed out, waited {timeout} seconds."
+                    timed_out = True
+                    text_output = timeout_fallback_text or f"Gemini API request/processing timed out, waited {timeout} seconds."
 
         except Exception as e:
             print(f"[ERROR] Unhandled error in generate method: {str(e)}")
@@ -869,7 +952,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         final_actual_seed = actual_seed if actual_seed is not None else 0
 
-        is_success = not text_output.startswith("API call/processing error:") and not text_output.startswith("Gemini API request/processing timed out")
+        is_success = not timed_out and not text_output.startswith("API call/processing error:") and not text_output.startswith("Gemini API request/processing timed out")
 
         # Cache the result
         if use_seed and is_success:
