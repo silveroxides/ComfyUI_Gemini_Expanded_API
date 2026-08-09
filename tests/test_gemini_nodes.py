@@ -417,6 +417,23 @@ def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
         assert model in model_input.options
 
 
+def test_gemini_4_placeholder_matches_3_6_without_ui_exposure():
+    placeholder = gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_FLASH_PREVIEW
+    reference = "gemini-3.6-flash"
+
+    for capability_list in (
+        gemini_nodes.SSL_GeminiTextPrompt.THINKING_MODELS,
+        gemini_nodes.SSL_GeminiTextPrompt.GEN3_THINKING_MODELS,
+        gemini_nodes.SSL_GeminiTextPrompt.IMAGE_MODELS,
+        gemini_nodes.SSL_GeminiTextPrompt.MEDIA_RES_MODELS,
+    ):
+        assert (placeholder in capability_list) == (reference in capability_list)
+
+    schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
+    model_input = next(input_ for input_ in schema.inputs if input_.id == "model")
+    assert placeholder not in model_input.options
+
+
 def test_timeout_returns_custom_fallback_without_caching(monkeypatch):
     release_request = threading.Event()
 

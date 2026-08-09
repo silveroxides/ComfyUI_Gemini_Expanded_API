@@ -16,4 +16,6 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 
 ## Repository-Specific Instructions
 
-Add only rules that apply specifically to this custom-node repository below this heading.
+- Treat the user's stated task boundary as a hard workspace-flow constraint. Do not expand a targeted change or question into adjacent authentication modes, transports, model catalogs, dependencies, UI redesigns, or speculative audits unless their relevance to the requested workflow is first established or the user explicitly approves the expanded scope.
+- Keep inspection proportional to the exact question: search for the concrete identifier, read only its containing boundary, and stop once the behavior is supported. Do not replace a direct answer with broad file reads, multi-subsystem analysis, or oversized diffs.
+- Describe plans and reviews through the user-facing controls and behaviors they affect before implementation details. Explicitly identify which visible fields are used, ignored, conditional, renamed, or preserved in each mode.
