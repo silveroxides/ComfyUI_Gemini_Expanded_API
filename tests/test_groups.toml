@@ -1,0 +1,11 @@
+# Gemini node schema, request construction, caching, and authentication behavior.
+[groups.gemini_node]
+paths = [
+  "gemini_nodes.py",
+]
+python_tests = [
+  "tests/test_gemini_nodes.py",
+]
+frontend_tests = [
+
+]
