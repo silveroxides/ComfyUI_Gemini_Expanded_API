@@ -283,27 +283,32 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return tensor
 
     @classmethod
-    def _flatten_image_inputs(cls, image_inputs: IO.Autogrow.Type | None):
+    def _ordered_image_frames(cls, image_inputs: IO.Autogrow.Type | None):
         if not image_inputs:
-            return []
+            return [], []
 
         def image_index(name):
             match = re.fullmatch(r"image_(\d+)", name)
             return int(match.group(1)) if match else 101
 
-        flattened = []
-        for _, image_batch in sorted(
+        frames = []
+        batch_counts = []
+        for socket_name, image_batch in sorted(
             image_inputs.items(), key=lambda item: (image_index(item[0]), item[0])
         ):
             if image_batch is None:
                 continue
             if not torch.is_tensor(image_batch) or image_batch.ndim != 4:
-                raise ValueError("Gemini image inputs must be BHWC image tensors.")
-            flattened.extend(
-                image_batch[index : index + 1]
-                for index in range(image_batch.shape[0])
+                raise ValueError(
+                    f"Gemini {socket_name} must be a BHWC image tensor."
+                )
+            batch_size = int(image_batch.shape[0])
+            batch_counts.append((socket_name, batch_size))
+            frames.extend(
+                (socket_name, index, image_batch[index])
+                for index in range(batch_size)
             )
-        return flattened
+        return frames, batch_counts
 
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
@@ -323,10 +328,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[WARNING] Cache hashing failed for image: {e}")
                 return "Error"
 
-        image_hashes = tuple(
-            get_tensor_hash(image)
-            for image in cls._flatten_image_inputs(image_inputs)
-        )
+        image_frames, _ = cls._ordered_image_frames(image_inputs)
+        image_hashes = tuple(get_tensor_hash(frame) for _, _, frame in image_frames)
 
         # 2. Determine Effective Parameters based on Model
         # This ensures we don't cache-miss if an irrelevant parameter changes
@@ -699,25 +702,43 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
             # Prepare contents (images + prompt)
-            images_to_process = cls._flatten_image_inputs(image_inputs)
+            image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
 
-            if images_to_process:
+            if image_frames:
                 try:
                     img_parts = []
-                    for img in images_to_process:
-                        img_array = img[0].cpu().numpy()
+                    for _, _, image_frame in image_frames:
+                        img_array = image_frame.cpu().numpy()
                         img_array = (img_array * 255).astype(np.uint8)
                         pil_img = Image.fromarray(img_array)
-                        print(f"[DEBUG] Input image format: {pil_img.mode}")
                         img_byte_arr = BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
                         if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
-                            img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}, "media_resolution": {"level": f"MEDIA_RESOLUTION_{media_resolution.upper()}"}}
+                            img_part = types.Part.from_bytes(
+                                data=img_bytes,
+                                mime_type="image/png",
+                                media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
+                            )
                         else:
-                            img_part = {"inline_data": {"mime_type": "image/png", "data": img_bytes}}
+                            img_part = types.Part.from_bytes(
+                                data=img_bytes,
+                                mime_type="image/png",
+                            )
                         img_parts.append(img_part)
-                    contents = img_parts + [{"text": padded_prompt}]
+                    batch_summary = ", ".join(
+                        f"{socket_name}={batch_size}"
+                        for socket_name, batch_size in image_batch_counts
+                    )
+                    print(
+                        f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
+                        f"total={len(img_parts)}"
+                    )
+                    contents = [
+                        types.UserContent(
+                            parts=img_parts + [types.Part.from_text(text=padded_prompt)]
+                        )
+                    ]
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
                     return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
