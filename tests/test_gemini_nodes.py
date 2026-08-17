@@ -443,6 +443,7 @@ def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
     model_input = next(input_ for input_ in schema.inputs if input_.id == "model")
 
     for model in (
+        "gemini-3.7-flash",
         "gemini-3.5-flash",
         "gemini-3.1-flash-image",
         "gemini-3.1-flash-lite-image",
@@ -450,6 +451,105 @@ def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
         "gemini-2.5-flash-image-preview",
     ):
         assert model in model_input.options
+
+
+@pytest.mark.parametrize(
+    ("selected_level", "expected_level"),
+    [("None", "medium"), ("low", "low"), ("medium", "medium"), ("high", "high")],
+)
+def test_gemini_3_7_uses_supported_thinking_levels(selected_level, expected_level):
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3.7-flash",
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        max_output_tokens=1024,
+        seed=7,
+        include_images=False,
+        response_modalities=["TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level=selected_level,
+        thinking_budget=4096,
+        include_thoughts=True,
+        media_resolution="unspecified",
+    )
+
+    assert config.thinking_config.thinking_level.value == expected_level.upper()
+    assert config.thinking_config.thinking_budget is None
+    assert config.temperature is None
+    assert config.top_p is None
+    assert config.top_k is None
+
+
+def test_gemini_3_7_fingerprint_matches_effective_request_controls():
+    common = {
+        "config": {"api_key": "key", "api_version": "v1"},
+        "prompt": "prompt",
+        "system_instruction": "system",
+        "model": "gemini-3.7-flash",
+        "max_output_tokens": 1024,
+        "include_images": False,
+        "aspect_ratio": "None",
+        "bypass_mode": "None",
+        "use_seed": False,
+        "seed": 0,
+        "include_thoughts": True,
+    }
+
+    default_fingerprint, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        thinking_budget=0,
+        thinking_level="None",
+    )
+    explicit_medium_fingerprint, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        thinking_budget=8192,
+        thinking_level="medium",
+    )
+    high_fingerprint, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        thinking_budget=8192,
+        thinking_level="high",
+    )
+    minimal_fingerprint, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        thinking_budget=8192,
+        thinking_level="minimal",
+    )
+    low_fingerprint, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.2,
+        top_p=0.7,
+        top_k=10,
+        thinking_budget=0,
+        thinking_level="low",
+    )
+
+    assert default_fingerprint == explicit_medium_fingerprint
+    assert high_fingerprint != default_fingerprint
+    assert minimal_fingerprint == low_fingerprint
+
+
+def test_gemini_3_7_coerces_minimal_to_low_with_warning(capsys):
+    resolved = gemini_nodes.SSL_GeminiTextPrompt._resolve_gemini_3_7_thinking_level(
+        "minimal"
+    )
+
+    assert resolved == "low"
+    assert "does not support minimal thinking; using low instead" in capsys.readouterr().out
 
 
 def test_gemini_4_placeholder_matches_3_6_without_ui_exposure():
