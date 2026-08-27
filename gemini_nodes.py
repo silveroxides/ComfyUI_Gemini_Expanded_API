@@ -195,16 +195,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"], default="None"),
                 IO.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
                 IO.Int.Input("thinking_budget", default=0, min=-1, max=24576, step=1, tooltip="0 disables thinking mode, -1 will activate it as default dynamic thinking and anything above 0 sets specific budget"),
-                IO.Autogrow.Input(
-                    "image_inputs",
-                    template=image_template,
-                    optional=True,
-                    tooltip=(
-                        "Ordered Gemini image parts growing from image_1 through image_100. Images inside a batch "
-                        "are sent consecutively before the next socket. Provider request-size and model-specific "
-                        "reference limits still apply."
-                    ),
-                ),
                 IO.Boolean.Input("use_proxy", default=False),
                 IO.String.Input("proxy_host", default="127.0.0.1"),
                 IO.Int.Input("proxy_port", default=7890, min=1, max=65535),
@@ -217,6 +207,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
+                IO.Autogrow.Input(
+                    "image_inputs",
+                    template=image_template,
+                    optional=True,
+                    tooltip=(
+                        "Ordered Gemini image parts growing from image_1 through image_100. Images inside a batch "
+                        "are sent consecutively before the next socket. Provider request-size and model-specific "
+                        "reference limits still apply."
+                    ),
+                ),
             ],
             outputs=[
                 IO.String.Output("text"),

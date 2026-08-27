@@ -59,10 +59,11 @@ def _install_success_client(monkeypatch, captured):
     gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
 
 
-def test_timeout_fallback_is_last_input():
+def test_image_autogrow_is_last_input():
     schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
 
-    assert schema.inputs[-1].id == "timeout_fallback_text"
+    assert schema.inputs[-2].id == "timeout_fallback_text"
+    assert schema.inputs[-1].id == "image_inputs"
 
 
 def test_vertex_config_socket_ids_remain_stable():
