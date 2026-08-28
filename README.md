@@ -57,6 +57,7 @@ Use the `Expanded Gemini Text/Image` node for text generation:
 - Enter your prompt text in `prompt`.
 - Adjust generation parameters (temperature, top_p, top_k, etc.).
 - If needed, connect an image to the `input_image` input for image understanding.
+- Enable `use_cache` on the configuration node to reuse unchanged prompt, system instruction, and image context through Gemini after the local result cache misses.
 
 ### 3. Proxy Settings
 
@@ -71,6 +72,9 @@ If you are in China or other regions requiring a proxy:
 ### API Key Configuration Node
 
 - `api_key`: Google Gemini API key
+- `use_cache`: Enable Gemini API context caching. Disabled by default.
+- `cache_ttl_minutes`: Number of minutes Gemini retains cached context.
+- `cache_seed`: Generation seed used while `use_cache` is enabled.
 
 ### Text Generation Node
 

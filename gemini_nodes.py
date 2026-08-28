@@ -10,7 +10,7 @@ from io import BytesIO
 import folder_paths  # type: ignore[reportMissingImports]
 from comfy_api.latest import ComfyExtension, UI, IO  # type: ignore[reportMissingImports]
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 import time
 import traceback
 import threading
@@ -115,6 +115,9 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
                 IO.String.Input("vertexai_project", optional=True),
                 IO.String.Input("vertexai_location", optional=True),
                 IO.String.Input("google_application_credentials", default="", optional=True, multiline=False, tooltip="Optional absolute path to an application default credentials JSON file for Vertex AI."),
+                IO.Boolean.Input("use_cache", default=False, optional=True, tooltip="Reuse unchanged Gemini input context through the API cache after a local result-cache miss."),
+                IO.Int.Input("cache_ttl_minutes", default=60, min=1, step=1, optional=True, tooltip="How long Gemini keeps explicitly cached context."),
+                IO.Int.Input("cache_seed", default=0, min=0, max=2147483647, optional=True, tooltip="Gemini generation seed used when context caching is enabled."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -124,7 +127,8 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
     @classmethod
     def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool,
                 vertexai_project: str | None = "", vertexai_location: str | None = "",
-                google_application_credentials: str | None = "") -> IO.NodeOutput:
+                google_application_credentials: str | None = "", use_cache=False,
+                cache_ttl_minutes=60, cache_seed=0) -> IO.NodeOutput:
         config = {
             "api_key": api_key,
             "api_version": api_version,
@@ -133,6 +137,9 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
             "vertexai_project": vertexai_project,
             "vertexai_location": vertexai_location,
             "google_application_credentials": google_application_credentials,
+            "use_cache": use_cache,
+            "cache_ttl_minutes": cache_ttl_minutes,
+            "cache_seed": cache_seed,
         }
         return IO.NodeOutput(config)
 
@@ -143,6 +150,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint_without_seed) -> successful_gemini_seed
     _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
+    _context_cache: dict = {}
+    _context_cache_lock = threading.Lock()
     GEMINI_3_7_FLASH = "gemini-3.7-flash"
 
     # Placeholder only. Keep this out of the model combo until Google's hosted-model
@@ -333,7 +342,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                              image_inputs: IO.Autogrow.Type | None = None,
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
-                                             retry_pattern="", max_retries=3):
+                                             retry_pattern="", max_retries=3, use_cache=False,
+                                             cache_ttl_minutes=60, cache_seed=0):
 
         # 1. Hashing Images
         def get_tensor_hash(tensor):
@@ -384,6 +394,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         # If none of the above, all effective thinking/image params remain default/ignored
 
         sanitized_config = dict(config)
+        for cache_setting in ("use_cache", "cache_ttl_minutes", "cache_seed"):
+            sanitized_config.pop(cache_setting, None)
         api_key = sanitized_config.get("api_key")
         if api_key:
             sanitized_config["api_key"] = f"sha256:{hashlib.sha256(str(api_key).encode('utf-8')).hexdigest()}"
@@ -403,6 +415,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             eff_thinking_budget,   # EFFECTIVE thinking_budget
             use_seed,
             int(seed) if use_seed else 0, # Only use seed in cache if use_seed is True
+            bool(use_cache),
+            int(cache_ttl_minutes) if use_cache else 0,
+            int(cache_seed) if use_cache and use_seed else 0,
             image_hashes,
             bool(use_proxy),
             str(proxy_host),
@@ -488,6 +503,87 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         client_args = {"proxy": proxy_url} if proxy_url else None
         return types.HttpOptions(api_version=api_version, client_args=client_args)
 
+    @staticmethod
+    def _build_context_cache_key(client_key, model, system_instruction, prompt,
+                                 image_hashes, media_resolution):
+        return (
+            client_key,
+            model,
+            system_instruction,
+            prompt,
+            tuple(image_hashes),
+            str(media_resolution),
+        )
+
+    @staticmethod
+    def _context_cache_expiry(cache, fallback_ttl_minutes):
+        expire_time = getattr(cache, "expire_time", None)
+        if expire_time is not None:
+            return expire_time.timestamp()
+        return time.time() + (int(fallback_ttl_minutes) * 60)
+
+    @classmethod
+    def _get_or_create_context_cache(cls, client, context_key, model, contents,
+                                     system_instruction, cache_ttl_minutes):
+        ttl = f"{int(cache_ttl_minutes) * 60}s"
+        with cls._context_cache_lock:
+            entry = cls._context_cache.get(context_key)
+            if entry is not None and entry["expires_at"] > time.time() + 1:
+                if entry["ttl_minutes"] == int(cache_ttl_minutes):
+                    print(f"[INFO] Reusing Gemini context cache {entry['name']}")
+                    return entry["name"]
+                try:
+                    updated = client.caches.update(
+                        name=entry["name"],
+                        config=types.UpdateCachedContentConfig(ttl=ttl),
+                    )
+                    entry = {
+                        "name": updated.name,
+                        "expires_at": cls._context_cache_expiry(updated, cache_ttl_minutes),
+                        "ttl_minutes": int(cache_ttl_minutes),
+                    }
+                    cls._context_cache[context_key] = entry
+                    print(f"[INFO] Updated Gemini context cache TTL to {cache_ttl_minutes} minutes")
+                    return entry["name"]
+                except Exception:
+                    cls._context_cache.pop(context_key, None)
+            elif entry is not None:
+                cls._context_cache.pop(context_key, None)
+
+            display_hash = hashlib.sha256(repr(context_key).encode("utf-8")).hexdigest()[:16]
+            created = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    contents=contents,
+                    system_instruction=system_instruction,
+                    display_name=f"comfyui-{display_hash}",
+                    ttl=ttl,
+                ),
+            )
+            if not created.name:
+                raise ValueError("Gemini did not return a context cache name.")
+            cls._context_cache[context_key] = {
+                "name": created.name,
+                "expires_at": cls._context_cache_expiry(created, cache_ttl_minutes),
+                "ttl_minutes": int(cache_ttl_minutes),
+            }
+            print(f"[INFO] Created Gemini context cache {created.name}")
+            return created.name
+
+    @classmethod
+    def _invalidate_context_cache(cls, context_key):
+        with cls._context_cache_lock:
+            cls._context_cache.pop(context_key, None)
+
+    @staticmethod
+    def _is_missing_context_cache_error(error):
+        if isinstance(error, errors.APIError) and error.status == 404:
+            return True
+        message = str(error).lower()
+        cache_reference = any(term in message for term in ("cached content", "cached_content", "cachedcontents"))
+        missing_reference = any(term in message for term in ("expired", "invalid", "not found"))
+        return cache_reference and missing_reference
+
     @classmethod
     def _build_generate_content_config(cls, model, temperature, top_p, top_k, max_output_tokens, seed,
                                        include_images, response_modalities, aspect_ratio, padded_system_instruction,
@@ -566,19 +662,22 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     @classmethod
     def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                 include_images, aspect_ratio, bypass_mode, thinking_budget,
-                image_inputs: IO.Autogrow.Type | None = None,
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None,
-                retry_pattern="", max_retries=3, timeout_fallback_text="") -> IO.NodeOutput:
+                retry_pattern="", max_retries=3, timeout_fallback_text="",
+                image_inputs: IO.Autogrow.Type | None = None) -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiTextPrompt execute called, model: {model}")
+        use_cache = bool(config.get("use_cache", False))
+        cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
+        cache_seed = int(config.get("cache_seed", 0))
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
             image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
             include_thoughts, thinking_level, media_resolution,
-            retry_pattern, max_retries
+            retry_pattern, max_retries, use_cache, cache_ttl_minutes, cache_seed
         )
 
         if cached is not None:
@@ -598,8 +697,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             padded_system_instruction = cls._pad_text_with_joiners(system_instruction)
             print(padded_system_instruction)
 
-        actual_seed = cls._handle_seed(use_seed, seed)
-        input_seed = seed  # Store the original input seed for cache key
+        api_seed = cache_seed if use_cache else seed
+        actual_seed = cls._handle_seed(use_seed, api_seed)
+        input_seed = api_seed  # Store the original API seed for retry cache key
 
         # Check if we have a cached successful gemini seed for this input seed
         # Build a cache key that excludes the seed itself (to match different gemini seeds for same input)
@@ -739,6 +839,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
             # Prepare contents (images + prompt)
             image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
+            context_image_hashes = []
 
             if image_frames:
                 try:
@@ -750,6 +851,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         img_byte_arr = BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
+                        context_image_hashes.append(hashlib.sha256(img_bytes).hexdigest())
                         if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
                             img_part = types.Part.from_bytes(
                                 data=img_bytes,
@@ -784,6 +886,14 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             # Logic Update: Only request IMAGE modality if include_images is TRUE AND it's the correct model
             # Otherwise we stick to TEXT modality
             response_modalities = ["IMAGE", "TEXT"] if (include_images and model in cls.IMAGE_MODELS) else ["TEXT"]
+            context_key = cls._build_context_cache_key(
+                client_key,
+                model,
+                padded_system_instruction,
+                padded_prompt,
+                context_image_hashes,
+                media_resolution,
+            )
 
             generate_content_config = cls._build_generate_content_config(
                 model=model,
@@ -791,7 +901,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 top_p=top_p,
                 top_k=top_k,
                 max_output_tokens=max_output_tokens,
-                seed=seed,
+                seed=api_seed,
                 include_images=include_images,
                 response_modalities=response_modalities,
                 aspect_ratio=aspect_ratio,
@@ -807,10 +917,57 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     generate_content_config.seed = actual_seed
                 except Exception:
                     pass
+            elif use_cache:
+                try:
+                    generate_content_config.seed = None
+                except Exception:
+                    pass
 
             # API call in background thread
             start_time = time.time()
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+
+            def generate_once():
+                if not use_cache:
+                    return client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=generate_content_config,
+                    )
+
+                for cache_attempt in range(2):
+                    try:
+                        cache_name = cls._get_or_create_context_cache(
+                            client,
+                            context_key,
+                            model,
+                            contents,
+                            padded_system_instruction,
+                            cache_ttl_minutes,
+                        )
+                    except Exception as cache_error:
+                        print(f"[WARNING] Gemini context cache unavailable; using full request: {cache_error}")
+                        return client.models.generate_content(
+                            model=model,
+                            contents=contents,
+                            config=generate_content_config,
+                        )
+
+                    cached_config = generate_content_config.model_copy(deep=True)
+                    cached_config.cached_content = cache_name
+                    cached_config.system_instruction = None
+                    try:
+                        return client.models.generate_content(
+                            model=model,
+                            contents=" ",
+                            config=cached_config,
+                        )
+                    except Exception as cache_error:
+                        if cache_attempt == 0 and cls._is_missing_context_cache_error(cache_error):
+                            cls._invalidate_context_cache(context_key)
+                            print("[INFO] Recreating expired Gemini context cache")
+                            continue
+                        raise
 
             def api_call():
                 last_api_exception = None
@@ -823,7 +980,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 generate_content_config.seed = actual_seed + attempt
                             except Exception:
                                 pass
-                        response = client.models.generate_content(model=model, contents=contents, config=generate_content_config)
+                        response = generate_once()
                         if not (response.candidates and getattr(response.candidates[0].content, 'parts', None)):
                             finish_reason = "UNKNOWN"
                             if response.candidates:

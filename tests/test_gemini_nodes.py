@@ -66,6 +66,238 @@ def test_image_autogrow_is_last_input():
     assert schema.inputs[-1].id == "image_inputs"
 
 
+def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatch):
+    captured = {"creates": [], "generations": []}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            captured["creates"].append(kwargs)
+            return SimpleNamespace(name="cachedContents/test", expire_time=None)
+
+        @staticmethod
+        def update(**kwargs):
+            raise AssertionError("TTL should not update")
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured["generations"].append(kwargs)
+            part = SimpleNamespace(text="ok", inline_data=None)
+            content = SimpleNamespace(parts=[part])
+            return SimpleNamespace(candidates=[SimpleNamespace(content=content)])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.caches = FakeCaches()
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+    config = {
+        "api_key": "test-key",
+        "api_version": "v1",
+        "use_vertexai_env": False,
+        "vertexai_express": False,
+        "vertexai_project": "",
+        "vertexai_location": "",
+        "google_application_credentials": "",
+        "use_cache": True,
+        "cache_ttl_minutes": 15,
+        "cache_seed": 123,
+    }
+    kwargs = _execute_kwargs(config)
+    kwargs.update(
+        use_seed=True,
+        seed=1,
+        image_inputs={"image_1": torch.full((1, 2, 2, 3), 0.25)},
+    )
+
+    first = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    kwargs["seed"] = 2
+    second = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    third = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert first[0] == second[0] == third[0] == "ok"
+    assert len(captured["creates"]) == 1
+    create_config = captured["creates"][0]["config"]
+    assert create_config.system_instruction == "test system instruction"
+    assert create_config.ttl == "900s"
+    assert create_config.contents[0].parts[-1].text == "test prompt"
+    assert len(create_config.contents[0].parts) == 2
+    assert len(captured["generations"]) == 2
+    assert all(call["contents"] == " " for call in captured["generations"])
+    assert all(call["config"].cached_content == "cachedContents/test" for call in captured["generations"])
+    assert all(call["config"].system_instruction is None for call in captured["generations"])
+    assert all(call["config"].seed == 123 for call in captured["generations"])
+
+
+def test_context_cache_creation_failure_uses_original_request(monkeypatch):
+    captured = {}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            raise RuntimeError("unsupported cache")
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured.update(kwargs)
+            part = SimpleNamespace(text="ok", inline_data=None)
+            content = SimpleNamespace(parts=[part])
+            return SimpleNamespace(candidates=[SimpleNamespace(content=content)])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.caches = FakeCaches()
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+    config = {
+        "api_key": "test-key",
+        "api_version": "v1",
+        "use_vertexai_env": False,
+        "vertexai_express": False,
+        "vertexai_project": "",
+        "vertexai_location": "",
+        "google_application_credentials": "",
+        "use_cache": True,
+        "cache_ttl_minutes": 60,
+        "cache_seed": 456,
+    }
+    kwargs = _execute_kwargs(config)
+    kwargs.update(
+        model="gemini-3-pro-image",
+        include_images=True,
+        use_seed=True,
+        seed=1,
+    )
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert output[0] == "ok"
+    assert captured["contents"] == "test prompt"
+    assert captured["config"].cached_content is None
+    assert captured["config"].system_instruction[0].text == "test system instruction"
+    assert captured["config"].seed == 456
+
+    kwargs.update(use_seed=False, seed=2)
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert output[0] == "ok"
+    assert captured["config"].seed is None
+
+    kwargs["config"] = config | {"use_cache": False}
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert output[0] == "ok"
+    assert captured["config"].seed == 2
+
+
+def test_missing_context_cache_is_recreated_once(monkeypatch):
+    captured = {"creates": 0, "generations": 0}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            captured["creates"] += 1
+            return SimpleNamespace(
+                name=f"cachedContents/test-{captured['creates']}",
+                expire_time=None,
+            )
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured["generations"] += 1
+            if captured["generations"] == 1:
+                raise RuntimeError("cached content not found")
+            part = SimpleNamespace(text="ok", inline_data=None)
+            content = SimpleNamespace(parts=[part])
+            return SimpleNamespace(candidates=[SimpleNamespace(content=content)])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.caches = FakeCaches()
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+    config = {
+        "api_key": "test-key",
+        "api_version": "v1",
+        "use_vertexai_env": False,
+        "vertexai_express": False,
+        "vertexai_project": "",
+        "vertexai_location": "",
+        "google_application_credentials": "",
+        "use_cache": True,
+        "cache_ttl_minutes": 60,
+        "cache_seed": 456,
+    }
+    kwargs = _execute_kwargs(config)
+    kwargs.update(use_seed=True, seed=1)
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert output[0] == "ok"
+    assert captured == {"creates": 2, "generations": 2}
+
+
+def test_context_cache_ttl_change_updates_existing_resource():
+    captured = {"creates": 0, "updates": []}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            captured["creates"] += 1
+            return SimpleNamespace(name="cachedContents/test", expire_time=None)
+
+        @staticmethod
+        def update(**kwargs):
+            captured["updates"].append(kwargs)
+            return SimpleNamespace(name="cachedContents/test", expire_time=None)
+
+    client = SimpleNamespace(caches=FakeCaches())
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+
+    first = gemini_nodes.SSL_GeminiTextPrompt._get_or_create_context_cache(
+        client, ("context",), "gemini-2.0-flash", "prompt", "system", 15
+    )
+    second = gemini_nodes.SSL_GeminiTextPrompt._get_or_create_context_cache(
+        client, ("context",), "gemini-2.0-flash", "prompt", "system", 30
+    )
+
+    assert first == second == "cachedContents/test"
+    assert captured["creates"] == 1
+    assert len(captured["updates"]) == 1
+    assert captured["updates"][0]["config"].ttl == "1800s"
+
+
+def test_context_cache_identity_covers_every_cached_input():
+    build_key = gemini_nodes.SSL_GeminiTextPrompt._build_context_cache_key
+    base = build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-a"], "low")
+    variants = {
+        build_key(("standard", "key-b"), "model-a", "system-a", "prompt-a", ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-b", "system-a", "prompt-a", ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-b", "prompt-a", ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-b", ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-b"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-a"], "high"),
+    }
+
+    assert base not in variants
+    assert len(variants) == 6
+
+
 def test_vertex_config_socket_ids_remain_stable():
     schema = gemini_nodes.SSL_GeminiAPIKeyConfig.define_schema()
 
@@ -77,7 +309,11 @@ def test_vertex_config_socket_ids_remain_stable():
         "vertexai_project",
         "vertexai_location",
         "google_application_credentials",
+        "use_cache",
+        "cache_ttl_minutes",
+        "cache_seed",
     ]
+    assert all(input_.optional for input_ in schema.inputs[-3:])
 
 
 def test_image_inputs_use_clean_autogrow_socket_ids():
