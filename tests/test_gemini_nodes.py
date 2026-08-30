@@ -59,11 +59,39 @@ def _install_success_client(monkeypatch, captured):
     gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
 
 
+class FakeVideo:
+    def __init__(self, data):
+        self.data = data
+        self.save_calls = []
+
+    def save_to(self, buffer, format, codec):
+        self.save_calls.append((format, codec))
+        buffer.write(self.data)
+
+
+def _video_config(data, fps=1):
+    return {"video": FakeVideo(data), "fps": fps}
+
+
 def test_image_autogrow_is_last_input():
     schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
 
-    assert schema.inputs[-2].id == "timeout_fallback_text"
+    assert schema.inputs[-2].id == "video"
+    assert schema.inputs[-2].optional is True
     assert schema.inputs[-1].id == "image_inputs"
+
+
+def test_video_config_exposes_native_video_and_integer_fps():
+    schema = gemini_nodes.SSL_GeminiVideoConfig.define_schema()
+    fps = next(input_ for input_ in schema.inputs if input_.id == "fps")
+
+    assert [input_.id for input_ in schema.inputs] == ["video", "fps"]
+    assert fps.default == 1
+    assert fps.min == 1
+    assert fps.max == 24
+    native_video = object()
+    output = gemini_nodes.SSL_GeminiVideoConfig.execute(native_video, 2)
+    assert output[0] == {"video": native_video, "fps": 2}
 
 
 def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatch):
@@ -112,6 +140,7 @@ def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatc
     kwargs.update(
         use_seed=True,
         seed=1,
+        video=_video_config(b"normalized-video", fps=2),
         image_inputs={"image_1": torch.full((1, 2, 2, 3), 0.25)},
     )
 
@@ -125,8 +154,11 @@ def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatc
     create_config = captured["creates"][0]["config"]
     assert create_config.system_instruction == "test system instruction"
     assert create_config.ttl == "900s"
+    assert create_config.contents[0].parts[0].inline_data.data == b"normalized-video"
+    assert create_config.contents[0].parts[0].inline_data.mime_type == "video/mp4"
+    assert create_config.contents[0].parts[0].video_metadata.fps == 2
     assert create_config.contents[0].parts[-1].text == "test prompt"
-    assert len(create_config.contents[0].parts) == 2
+    assert len(create_config.contents[0].parts) == 3
     assert len(captured["generations"]) == 2
     assert all(call["contents"] == " " for call in captured["generations"])
     assert all(call["config"].cached_content == "cachedContents/test" for call in captured["generations"])
@@ -284,18 +316,117 @@ def test_context_cache_ttl_change_updates_existing_resource():
 
 def test_context_cache_identity_covers_every_cached_input():
     build_key = gemini_nodes.SSL_GeminiTextPrompt._build_context_cache_key
-    base = build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-a"], "low")
+    base = build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-a", "video/mp4", 1, ["image-a"], "low")
     variants = {
-        build_key(("standard", "key-b"), "model-a", "system-a", "prompt-a", ["image-a"], "low"),
-        build_key(("standard", "key-a"), "model-b", "system-a", "prompt-a", ["image-a"], "low"),
-        build_key(("standard", "key-a"), "model-a", "system-b", "prompt-a", ["image-a"], "low"),
-        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-b", ["image-a"], "low"),
-        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-b"], "low"),
-        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", ["image-a"], "high"),
+        build_key(("standard", "key-b"), "model-a", "system-a", "prompt-a", "video-a", "video/mp4", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-b", "system-a", "prompt-a", "video-a", "video/mp4", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-b", "prompt-a", "video-a", "video/mp4", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-b", "video-a", "video/mp4", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-b", "video/mp4", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-a", "video/webm", 1, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-a", "video/mp4", 2, ["image-a"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-a", "video/mp4", 1, ["image-b"], "low"),
+        build_key(("standard", "key-a"), "model-a", "system-a", "prompt-a", "video-a", "video/mp4", 1, ["image-a"], "high"),
     }
 
     assert base not in variants
-    assert len(variants) == 6
+    assert len(variants) == 9
+
+
+def test_video_is_normalized_sent_first_and_locally_fingerprinted(monkeypatch):
+    captured = {"generations": []}
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured["generations"].append(kwargs)
+            part = SimpleNamespace(text="ok", inline_data=None)
+            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    kwargs = _execute_kwargs(_config(api_key="test-key"))
+    kwargs.update(
+        model="gemini-3-flash-preview",
+        media_resolution="low",
+        use_seed=True,
+        seed=7,
+        video=_video_config(b"video-a", fps=2),
+    )
+
+    first = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    kwargs["video"] = _video_config(b"video-a", fps=2)
+    second = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    kwargs["video"] = _video_config(b"video-b", fps=2)
+    third = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert first[0] == second[0] == third[0] == "ok"
+    assert len(captured["generations"]) == 2
+    parts = captured["generations"][0]["contents"][0].parts
+    assert parts[0].inline_data.data == b"video-a"
+    assert parts[0].inline_data.mime_type == "video/mp4"
+    assert parts[0].media_resolution.level == "MEDIA_RESOLUTION_LOW"
+    assert parts[-1].text == "test prompt"
+    assert kwargs["video"]["video"].save_calls == [
+        (gemini_nodes.Types.VideoContainer.MP4, gemini_nodes.Types.VideoCodec.H264)
+    ]
+
+
+def test_video_at_inline_limit_returns_clear_error(monkeypatch):
+    monkeypatch.setattr(gemini_nodes.SSL_GeminiTextPrompt, "VIDEO_INLINE_LIMIT_BYTES", 4)
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config()),
+        video=_video_config(b"1234"),
+    )
+
+    assert output[0] == "Error processing input video: Gemini video input must be smaller than 100 MB after MP4/H.264 normalization."
+
+
+def test_vertex_video_over_cache_blob_limit_uses_full_request(monkeypatch):
+    captured = {"cache_creates": 0, "generations": []}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            captured["cache_creates"] += 1
+            raise AssertionError("Vertex cache creation must be skipped")
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured["generations"].append(kwargs)
+            part = SimpleNamespace(text="ok", inline_data=None)
+            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.caches = FakeCaches()
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_nodes.SSL_GeminiTextPrompt, "VERTEX_CACHE_INLINE_LIMIT_BYTES", 1)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+    config = _config(api_key="test-key", vertexai_express=True, use_cache=True, cache_seed=11)
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(config),
+        use_seed=True,
+        seed=2,
+        video=_video_config(b"12"),
+    )
+
+    assert output[0] == "ok"
+    assert captured["cache_creates"] == 0
+    assert len(captured["generations"]) == 1
+    assert captured["generations"][0]["contents"] != " "
+    assert captured["generations"][0]["config"].seed == 11
 
 
 def test_vertex_config_socket_ids_remain_stable():

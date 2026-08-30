@@ -56,8 +56,9 @@ Use the `Expanded Gemini Text/Image` node for text generation:
 - Connect the API key configuration node to the `config` input.
 - Enter your prompt text in `prompt`.
 - Adjust generation parameters (temperature, top_p, top_k, etc.).
-- If needed, connect an image to the `input_image` input for image understanding.
-- Enable `use_cache` on the configuration node to reuse unchanged prompt, system instruction, and image context through Gemini after the local result cache misses.
+- If needed, connect images through `image_inputs`. For video, pass a native ComfyUI video through `Configure Gemini Video Input`, then connect its output to `video`.
+- Configured video is normalized to MP4/H.264 and sent with embedded audio at the selected sampling FPS. The normalized video must be smaller than 100 MB.
+- Enable `use_cache` on the configuration node to reuse unchanged prompt, system instruction, image, and video context through Gemini after the local result cache misses.
 
 ### 3. Proxy Settings
 
@@ -91,7 +92,8 @@ If you are in China or other regions requiring a proxy:
 
 #### Optional Parameters
 
-- `input_image`: Input image (for image understanding)
+- `video`: Optional `GEMINI_VIDEO_CONFIG` input. Its video is sent before images and prompt with embedded audio.
+- `image_inputs`: Optional ordered image autogrow inputs for image understanding.
 - `use_proxy`: Whether to use a proxy (True/False)
 - `proxy_host`: Proxy host address
 - `proxy_port`: Proxy port

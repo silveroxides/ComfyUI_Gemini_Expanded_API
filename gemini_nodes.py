@@ -8,7 +8,7 @@ import cv2
 from PIL import Image
 from io import BytesIO
 import folder_paths  # type: ignore[reportMissingImports]
-from comfy_api.latest import ComfyExtension, UI, IO  # type: ignore[reportMissingImports]
+from comfy_api.latest import ComfyExtension, UI, IO, Types  # type: ignore[reportMissingImports]
 from google import genai
 from google.genai import errors, types
 import time
@@ -145,14 +145,39 @@ class SSL_GeminiAPIKeyConfig(IO.ComfyNode):
 
 
 
+class SSL_GeminiVideoConfig(IO.ComfyNode):
+    GeminiVideoConfig = IO.Custom("GEMINI_VIDEO_CONFIG")
+
+    @classmethod
+    def define_schema(cls) -> IO.Schema:
+        return IO.Schema(
+            node_id="SSL_GeminiVideoConfig",
+            display_name="Configure Gemini Video Input",
+            category="API/Gemini",
+            inputs=[
+                IO.Video.Input("video"),
+                IO.Int.Input("fps", default=1, min=1, max=24, step=1, tooltip="Frames per second sampled by Gemini for video understanding."),
+            ],
+            outputs=[cls.GeminiVideoConfig.Output("video_config")],
+        )
+
+    @classmethod
+    def execute(cls, video: IO.Video.Type, fps: int) -> IO.NodeOutput:
+        return IO.NodeOutput({"video": video, "fps": int(fps)})
+
+
 class SSL_GeminiTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
+    GeminiVideoConfig = IO.Custom("GEMINI_VIDEO_CONFIG")
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint_without_seed) -> successful_gemini_seed
     _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
     _context_cache: dict = {}
     _context_cache_lock = threading.Lock()
     GEMINI_3_7_FLASH = "gemini-3.7-flash"
+    VIDEO_MIME_TYPE = "video/mp4"
+    VIDEO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
+    VERTEX_CACHE_INLINE_LIMIT_BYTES = 10 * 1024 * 1024
 
     # Placeholder only. Keep this out of the model combo until Google's hosted-model
     # documentation confirms the final ID and gemini-3.6-flash-equivalent capabilities
@@ -216,6 +241,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
+                cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
                 IO.Autogrow.Input(
                     "image_inputs",
                     template=image_template,
@@ -321,6 +347,22 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return frames, batch_counts
 
     @classmethod
+    def _serialize_video(cls, video: IO.Video.Type | None):
+        if video is None:
+            return None, None
+
+        buffer = BytesIO()
+        video.save_to(
+            buffer,
+            format=Types.VideoContainer.MP4,
+            codec=Types.VideoCodec.H264,
+        )
+        video_bytes = buffer.getvalue()
+        if len(video_bytes) >= cls.VIDEO_INLINE_LIMIT_BYTES:
+            raise ValueError("Gemini video input must be smaller than 100 MB after MP4/H.264 normalization.")
+        return video_bytes, cls.VIDEO_MIME_TYPE
+
+    @classmethod
     def _resolve_gemini_3_7_thinking_level(cls, thinking_level):
         if thinking_level is None or thinking_level == "None":
             return "medium"
@@ -339,6 +381,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                                              include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
+                                             video_hash=None, video_mime_type=None, video_fps=None,
                                              image_inputs: IO.Autogrow.Type | None = None,
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
@@ -418,6 +461,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             bool(use_cache),
             int(cache_ttl_minutes) if use_cache else 0,
             int(cache_seed) if use_cache and use_seed else 0,
+            video_hash,
+            video_mime_type,
+            video_fps,
             image_hashes,
             bool(use_proxy),
             str(proxy_host),
@@ -505,12 +551,15 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     @staticmethod
     def _build_context_cache_key(client_key, model, system_instruction, prompt,
-                                 image_hashes, media_resolution):
+                                 video_hash, video_mime_type, video_fps, image_hashes, media_resolution):
         return (
             client_key,
             model,
             system_instruction,
             prompt,
+            video_hash,
+            video_mime_type,
+            video_fps,
             tuple(image_hashes),
             str(media_resolution),
         )
@@ -665,15 +714,26 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None,
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
+                video: GeminiVideoConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None) -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiTextPrompt execute called, model: {model}")
         use_cache = bool(config.get("use_cache", False))
         cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
         cache_seed = int(config.get("cache_seed", 0))
+        video_input = video.get("video") if video is not None else None
+        video_fps = int(video.get("fps", 1)) if video is not None else None
+        try:
+            video_bytes, video_mime_type = cls._serialize_video(video_input)
+        except Exception as e:
+            print(f"[ERROR] Error processing input video: {e}")
+            output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
+            return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed)
+        video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
+            video_hash, video_mime_type, video_fps,
             image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
             include_thoughts, thinking_level, media_resolution,
@@ -837,9 +897,27 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
 
-            # Prepare contents (images + prompt)
+            # Prepare contents (video + images + prompt)
             image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
             context_image_hashes = []
+            media_parts = []
+            context_inline_bytes = (
+                (len(video_bytes) if video_bytes is not None else 0)
+                + len(padded_prompt.encode("utf-8"))
+                + len(padded_system_instruction.encode("utf-8"))
+            )
+
+            if video_bytes is not None:
+                if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
+                    video_part = types.Part.from_bytes(
+                        data=video_bytes,
+                        mime_type=video_mime_type,
+                        media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
+                    )
+                else:
+                    video_part = types.Part.from_bytes(data=video_bytes, mime_type=video_mime_type)
+                video_part.video_metadata = types.VideoMetadata(fps=video_fps)
+                media_parts.append(video_part)
 
             if image_frames:
                 try:
@@ -851,6 +929,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         img_byte_arr = BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
+                        context_inline_bytes += len(img_bytes)
                         context_image_hashes.append(hashlib.sha256(img_bytes).hexdigest())
                         if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
                             img_part = types.Part.from_bytes(
@@ -872,14 +951,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
                         f"total={len(img_parts)}"
                     )
-                    contents = [
-                        types.UserContent(
-                            parts=img_parts + [types.Part.from_text(text=padded_prompt)]
-                        )
-                    ]
+                    media_parts.extend(img_parts)
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
                     return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0)
+            if media_parts:
+                contents = [
+                    types.UserContent(
+                        parts=media_parts + [types.Part.from_text(text=padded_prompt)]
+                    )
+                ]
             else:
                 contents = padded_prompt
 
@@ -891,9 +972,21 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 model,
                 padded_system_instruction,
                 padded_prompt,
+                video_hash,
+                video_mime_type,
+                video_fps,
                 context_image_hashes,
                 media_resolution,
             )
+
+            skip_context_cache = (
+                use_cache
+                and video_bytes is not None
+                and (config.get("use_vertexai_env", False) or config.get("vertexai_express", False))
+                and context_inline_bytes > cls.VERTEX_CACHE_INLINE_LIMIT_BYTES
+            )
+            if skip_context_cache:
+                print("[WARNING] Vertex context cache skipped because inline cached media exceeds 10 MB; using full request")
 
             generate_content_config = cls._build_generate_content_config(
                 model=model,
@@ -928,7 +1021,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
 
             def generate_once():
-                if not use_cache:
+                if not use_cache or skip_context_cache:
                     return client.models.generate_content(
                         model=model,
                         contents=contents,

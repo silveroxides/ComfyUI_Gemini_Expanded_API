@@ -1,5 +1,5 @@
 from comfy_api.latest import ComfyExtension, io
-from .gemini_nodes import GetKeyAPI, SSL_GeminiAPIKeyConfig, SSL_GeminiTextPrompt
+from .gemini_nodes import GetKeyAPI, SSL_GeminiAPIKeyConfig, SSL_GeminiVideoConfig, SSL_GeminiTextPrompt
 
 
 class GeminiExtension(ComfyExtension):
@@ -10,6 +10,7 @@ class GeminiExtension(ComfyExtension):
 		return [
 			GetKeyAPI,
 			SSL_GeminiAPIKeyConfig,
+			SSL_GeminiVideoConfig,
 			SSL_GeminiTextPrompt,
 		]
 
