@@ -888,6 +888,7 @@ def test_confirmed_current_models_are_visible_without_deprecated_image_aliases()
     model_input = next(input_ for input_ in schema.inputs if input_.id == "model")
     input_ids = [input_.id for input_ in schema.inputs]
     aspect_ratio = next(input_ for input_ in schema.inputs if input_.id == "aspect_ratio")
+    image_size = next(input_ for input_ in schema.inputs if input_.id == "image_size")
 
     for model in (
         "gemini-3.7-flash",
@@ -903,6 +904,9 @@ def test_confirmed_current_models_are_visible_without_deprecated_image_aliases()
     assert input_ids[input_ids.index("include_images") + 1] == "aspect_ratio"
     assert aspect_ratio.options == ["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"]
     assert aspect_ratio.default == "None"
+    assert input_ids[input_ids.index("timeout_fallback_text") + 1] == "image_size"
+    assert image_size.options == ["None", "512", "1K", "2K", "4K"]
+    assert image_size.default == "None"
 
 
 def test_image_config_omits_none_aspect_ratio():
@@ -946,6 +950,29 @@ def test_image_config_preserves_concrete_aspect_ratio():
     )
 
     assert config.image_config.aspect_ratio == "16:9"
+
+
+def test_image_config_preserves_requested_image_size():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3.1-flash-image",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        seed=7,
+        include_images=True,
+        response_modalities=["IMAGE", "TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=0,
+        include_thoughts=False,
+        media_resolution="unspecified",
+        image_size="2K",
+    )
+
+    assert config.image_config.aspect_ratio is None
+    assert config.image_config.image_size == "2K"
 
 
 def test_enterprise_image_config_allows_all_people():

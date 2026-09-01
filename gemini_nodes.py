@@ -248,6 +248,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
+                IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
                 IO.Autogrow.Input(
                     "image_inputs",
@@ -447,7 +448,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
-                                             cache_ttl_minutes=60, cache_seed=0):
+                                             cache_ttl_minutes=60, cache_seed=0, image_size="None"):
 
         # 1. Hashing Images
         def get_tensor_hash(tensor):
@@ -468,6 +469,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         # Defaults
         eff_include_images = False
         eff_aspect_ratio = "None"
+        eff_image_size = "None"
         eff_thinking_level = "None"
         eff_thinking_budget = -1
         eff_include_thoughts = False
@@ -479,6 +481,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         if include_images and model in cls.IMAGE_MODELS:
             eff_include_images = True
             eff_aspect_ratio = str(aspect_ratio)
+            eff_image_size = "None" if image_size in (None, "None") else str(image_size)
             # When generating images, thinking params are ignored
 
         elif model == cls.GEMINI_3_7_FLASH:
@@ -515,6 +518,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             int(max_output_tokens),
             eff_include_images,    # EFFECTIVE include_images
             eff_aspect_ratio,      # EFFECTIVE aspect_ratio
+            eff_image_size,        # EFFECTIVE image_size
             str(bypass_mode),
             eff_thinking_budget,   # EFFECTIVE thinking_budget
             use_seed,
@@ -698,7 +702,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     def _build_generate_content_config(cls, model, temperature, top_p, top_k, max_output_tokens, seed,
                                        include_images, response_modalities, aspect_ratio, padded_system_instruction,
                                        thinking_level, thinking_budget, include_thoughts, media_resolution,
-                                       allow_all_people=False):
+                                       image_size="None", allow_all_people=False):
         # Centralized builder for GenerateContentConfig used by different model/feature branches
         safety = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -713,6 +717,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             image_config = {}
             if aspect_ratio not in (None, "None"):
                 image_config["aspect_ratio"] = aspect_ratio
+            if image_size not in (None, "None"):
+                image_config["image_size"] = image_size
             if allow_all_people:
                 image_config["person_generation"] = "ALLOW_ALL"
             return types.GenerateContentConfig(
@@ -781,6 +787,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None,
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
+                image_size="None",
                 video: GeminiVideoConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None) -> IO.NodeOutput:
 
@@ -811,7 +818,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
             include_thoughts, thinking_level, media_resolution,
-            retry_pattern, max_retries, use_cache, cache_ttl_minutes, cache_seed
+            retry_pattern, max_retries, use_cache, cache_ttl_minutes, cache_seed,
+            image_size=image_size,
         )
 
         if cached is not None:
@@ -1077,6 +1085,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 thinking_budget=thinking_budget,
                 include_thoughts=include_thoughts,
                 media_resolution=media_resolution,
+                image_size=image_size,
                 allow_all_people=bool(config.get("use_vertexai_env", False) or config.get("vertexai_express", False)),
             )
 
