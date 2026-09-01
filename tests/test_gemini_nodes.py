@@ -975,6 +975,34 @@ def test_image_config_preserves_requested_image_size():
     assert config.image_config.image_size == "2K"
 
 
+@pytest.mark.parametrize(
+    ("model", "image_size", "allowed"),
+    [
+        ("gemini-3.1-flash-lite-image", "2K", "1K"),
+        ("gemini-3-pro-image", "512", "1K, 2K, 4K"),
+    ],
+)
+def test_image_config_rejects_unsupported_image_size(model, image_size, allowed):
+    with pytest.raises(ValueError, match=rf"^{model} image_size must be one of: {allowed}\.$"):
+        gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+            model=model,
+            temperature=1.0,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=8192,
+            seed=7,
+            include_images=True,
+            response_modalities=["IMAGE", "TEXT"],
+            aspect_ratio="None",
+            padded_system_instruction="system",
+            thinking_level="None",
+            thinking_budget=0,
+            include_thoughts=False,
+            media_resolution="unspecified",
+            image_size=image_size,
+        )
+
+
 def test_enterprise_image_config_allows_all_people():
     config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
         model="gemini-3.1-flash-image",

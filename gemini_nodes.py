@@ -206,6 +206,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image",
         "gemini-3-pro-image-preview", "gemini-3-pro-image",
     ]
+    IMAGE_SIZE_BY_SELECTABLE_MODEL = {
+        "gemini-3.1-flash-image": ("512", "1K", "2K", "4K"),
+        "gemini-3.1-flash-lite-image": ("1K",),
+        "gemini-3-pro-image": ("1K", "2K", "4K"),
+    }
     MEDIA_RES_MODELS = [
         "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
         "gemini-3.5-flash", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
@@ -248,7 +253,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
-                IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
+                IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", optional=True, tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
                 IO.Autogrow.Input(
                     "image_inputs",
@@ -718,6 +723,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             if aspect_ratio not in (None, "None"):
                 image_config["aspect_ratio"] = aspect_ratio
             if image_size not in (None, "None"):
+                supported_image_sizes = cls.IMAGE_SIZE_BY_SELECTABLE_MODEL.get(model)
+                if supported_image_sizes is not None and image_size not in supported_image_sizes:
+                    allowed = ", ".join(supported_image_sizes)
+                    raise ValueError(f"{model} image_size must be one of: {allowed}.")
                 image_config["image_size"] = image_size
             if allow_all_people:
                 image_config["person_generation"] = "ALLOW_ALL"
