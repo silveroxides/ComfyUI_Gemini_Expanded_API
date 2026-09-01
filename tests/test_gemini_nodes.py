@@ -883,9 +883,11 @@ def test_proxy_uses_sdk_http_options_without_mutating_environment(monkeypatch):
     assert gemini_nodes.os.environ["HTTP_PROXY"] == "http://existing-proxy:9000"
 
 
-def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
+def test_confirmed_current_models_are_visible_without_deprecated_image_aliases():
     schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
     model_input = next(input_ for input_ in schema.inputs if input_.id == "model")
+    input_ids = [input_.id for input_ in schema.inputs]
+    aspect_ratio = next(input_ for input_ in schema.inputs if input_.id == "aspect_ratio")
 
     for model in (
         "gemini-3.7-flash",
@@ -893,9 +895,80 @@ def test_confirmed_current_models_are_visible_without_removing_legacy_ids():
         "gemini-3.1-flash-image",
         "gemini-3.1-flash-lite-image",
         "gemini-3-pro-image",
-        "gemini-2.5-flash-image-preview",
     ):
         assert model in model_input.options
+
+    assert "gemini-2.5-flash-image-preview" not in model_input.options
+    assert "nano-banana-pro-preview" not in model_input.options
+    assert input_ids[input_ids.index("include_images") + 1] == "aspect_ratio"
+    assert aspect_ratio.options == ["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"]
+    assert aspect_ratio.default == "None"
+
+
+def test_image_config_omits_none_aspect_ratio():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3.1-flash-image",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        seed=7,
+        include_images=True,
+        response_modalities=["TEXT", "IMAGE"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=0,
+        include_thoughts=False,
+        media_resolution="unspecified",
+    )
+
+    assert config.response_modalities == ["TEXT", "IMAGE"]
+    assert config.image_config is None
+
+
+def test_image_config_preserves_concrete_aspect_ratio():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3-pro-image",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        seed=7,
+        include_images=True,
+        response_modalities=["IMAGE", "TEXT"],
+        aspect_ratio="16:9",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=0,
+        include_thoughts=False,
+        media_resolution="unspecified",
+    )
+
+    assert config.image_config.aspect_ratio == "16:9"
+
+
+def test_enterprise_image_config_allows_all_people():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3.1-flash-image",
+        temperature=1.0,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        seed=7,
+        include_images=True,
+        response_modalities=["IMAGE", "TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=0,
+        include_thoughts=False,
+        media_resolution="unspecified",
+        allow_all_people=True,
+    )
+
+    assert config.image_config.aspect_ratio is None
+    assert config.image_config.person_generation == "ALLOW_ALL"
 
 
 @pytest.mark.parametrize(

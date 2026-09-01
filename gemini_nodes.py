@@ -202,9 +202,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_4_FLASH_PREVIEW
     ]
     IMAGE_MODELS = [
-        "gemini-2.5-flash-image-preview", "gemini-2.5-flash-image",
+        "gemini-2.5-flash-image",
         "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image",
-        "gemini-3-pro-image-preview", "gemini-3-pro-image", "nano-banana-pro-preview",
+        "gemini-3-pro-image-preview", "gemini-3-pro-image",
     ]
     MEDIA_RES_MODELS = [
         "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview",
@@ -227,7 +227,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, "gemini-2.5-flash-image-preview", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "nano-banana-pro-preview", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -697,7 +697,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     @classmethod
     def _build_generate_content_config(cls, model, temperature, top_p, top_k, max_output_tokens, seed,
                                        include_images, response_modalities, aspect_ratio, padded_system_instruction,
-                                       thinking_level, thinking_budget, include_thoughts, media_resolution):
+                                       thinking_level, thinking_budget, include_thoughts, media_resolution,
+                                       allow_all_people=False):
         # Centralized builder for GenerateContentConfig used by different model/feature branches
         safety = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -709,6 +710,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         # Modified: Only trigger image config if include_images is True AND the model is actually an image model
         if include_images and model in cls.IMAGE_MODELS:
+            image_config = {}
+            if aspect_ratio not in (None, "None"):
+                image_config["aspect_ratio"] = aspect_ratio
+            if allow_all_people:
+                image_config["person_generation"] = "ALLOW_ALL"
             return types.GenerateContentConfig(
                 temperature=temperature,
                 top_p=top_p,
@@ -717,7 +723,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 max_output_tokens=max_output_tokens,
                 safety_settings=safety,
                 response_modalities=response_modalities,
-                image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                image_config=types.ImageConfig(**image_config) if image_config else None,
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
@@ -1071,6 +1077,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 thinking_budget=thinking_budget,
                 include_thoughts=include_thoughts,
                 media_resolution=media_resolution,
+                allow_all_people=bool(config.get("use_vertexai_env", False) or config.get("vertexai_express", False)),
             )
 
             if use_seed and actual_seed is not None:
