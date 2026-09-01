@@ -8,7 +8,7 @@ import cv2
 from PIL import Image
 from io import BytesIO
 import folder_paths  # type: ignore[reportMissingImports]
-from comfy_api.latest import ComfyExtension, UI, IO, Types  # type: ignore[reportMissingImports]
+from comfy_api.latest import ComfyExtension, UI, IO, Types, VideoFromComponents  # type: ignore[reportMissingImports]
 from google import genai
 from google.genai import errors, types
 import time
@@ -157,13 +157,20 @@ class SSL_GeminiVideoConfig(IO.ComfyNode):
             inputs=[
                 IO.Video.Input("video"),
                 IO.Int.Input("fps", default=1, min=1, max=24, step=1, tooltip="Frames per second sampled by Gemini for video understanding."),
+                IO.Boolean.Input("pad_at_start", default=False, tooltip="Prepend black video and silence for half one Gemini sampling interval."),
+                IO.Boolean.Input("duration_aware_padding", default=False, tooltip="Use the video's fractional-second duration, rounded down to native video frames, as the start padding duration."),
             ],
             outputs=[cls.GeminiVideoConfig.Output("video_config")],
         )
 
     @classmethod
-    def execute(cls, video: IO.Video.Type, fps: int) -> IO.NodeOutput:
-        return IO.NodeOutput({"video": video, "fps": int(fps)})
+    def execute(cls, video: IO.Video.Type, fps: int, pad_at_start: bool = False, duration_aware_padding: bool = False) -> IO.NodeOutput:
+        return IO.NodeOutput({
+            "video": video,
+            "fps": int(fps),
+            "pad_at_start": bool(pad_at_start),
+            "duration_aware_padding": bool(duration_aware_padding),
+        })
 
 
 class SSL_GeminiTextPrompt(IO.ComfyNode):
@@ -347,12 +354,66 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return frames, batch_counts
 
     @classmethod
-    def _serialize_video(cls, video: IO.Video.Type | None):
+    def _serialize_video(cls, video: IO.Video.Type | None, fps: int | None = None,
+                         pad_at_start: bool = False, duration_aware_padding: bool = False):
         if video is None:
             return None, None
 
+        video_to_save = video
+        if pad_at_start:
+            if fps is None:
+                raise ValueError("Gemini video FPS is required when padding at start.")
+            components = video.get_components()
+            native_frame_rate = components.frame_rate
+            source_frame_rate = float(native_frame_rate)
+            source_images = components.images
+            source_frame_count = source_images.shape[0]
+            if duration_aware_padding:
+                source_duration = video.get_duration()
+                target_frame_rate = native_frame_rate
+                padding_frame_count = int((source_duration % 1.0) * source_frame_rate)
+                resampled_images = source_images
+            else:
+                source_duration = source_frame_count / source_frame_rate
+                target_frame_rate = fps * 2
+                padding_frame_count = 1
+                target_frame_count = max(1, round(source_duration * target_frame_rate))
+                source_indices = (
+                    torch.arange(target_frame_count, device=source_images.device, dtype=torch.float64)
+                    * source_frame_rate
+                    / target_frame_rate
+                ).floor().long().clamp(max=source_frame_count - 1)
+                resampled_images = source_images.index_select(0, source_indices)
+            black_frames = torch.zeros_like(resampled_images[:1]).expand(padding_frame_count, -1, -1, -1)
+            padded_images = torch.cat((black_frames, resampled_images), dim=0)
+
+            padded_audio = components.audio
+            if padded_audio:
+                sample_rate = int(padded_audio["sample_rate"])
+                waveform = padded_audio["waveform"]
+                silence_samples = round(sample_rate * padding_frame_count / target_frame_rate)
+                silence = torch.zeros(
+                    (*waveform.shape[:-1], silence_samples),
+                    dtype=waveform.dtype,
+                    device=waveform.device,
+                )
+                padded_audio = {
+                    **padded_audio,
+                    "waveform": torch.cat((silence, waveform), dim=-1),
+                }
+
+            video_to_save = VideoFromComponents(
+                Types.VideoComponents(
+                    images=padded_images,
+                    audio=padded_audio,
+                    frame_rate=target_frame_rate,
+                ),
+                bit_depth=video.get_bit_depth(),
+                color_space=video.get_color_space(),
+            )
+
         buffer = BytesIO()
-        video.save_to(
+        video_to_save.save_to(
             buffer,
             format=Types.VideoContainer.MP4,
             codec=Types.VideoCodec.H264,
@@ -723,8 +784,15 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         cache_seed = int(config.get("cache_seed", 0))
         video_input = video.get("video") if video is not None else None
         video_fps = int(video.get("fps", 1)) if video is not None else None
+        video_pad_at_start = bool(video.get("pad_at_start", False)) if video is not None else False
+        video_duration_aware_padding = bool(video.get("duration_aware_padding", False)) if video is not None else False
         try:
-            video_bytes, video_mime_type = cls._serialize_video(video_input)
+            video_bytes, video_mime_type = cls._serialize_video(
+                video_input,
+                video_fps,
+                video_pad_at_start,
+                video_duration_aware_padding,
+            )
         except Exception as e:
             print(f"[ERROR] Error processing input video: {e}")
             output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0

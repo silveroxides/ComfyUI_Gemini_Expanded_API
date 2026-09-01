@@ -84,14 +84,91 @@ def test_image_autogrow_is_last_input():
 def test_video_config_exposes_native_video_and_integer_fps():
     schema = gemini_nodes.SSL_GeminiVideoConfig.define_schema()
     fps = next(input_ for input_ in schema.inputs if input_.id == "fps")
+    pad_at_start = next(input_ for input_ in schema.inputs if input_.id == "pad_at_start")
+    duration_aware_padding = next(input_ for input_ in schema.inputs if input_.id == "duration_aware_padding")
 
-    assert [input_.id for input_ in schema.inputs] == ["video", "fps"]
+    assert [input_.id for input_ in schema.inputs] == ["video", "fps", "pad_at_start", "duration_aware_padding"]
     assert fps.default == 1
     assert fps.min == 1
     assert fps.max == 24
+    assert pad_at_start.default is False
+    assert duration_aware_padding.default is False
     native_video = object()
-    output = gemini_nodes.SSL_GeminiVideoConfig.execute(native_video, 2)
-    assert output[0] == {"video": native_video, "fps": 2}
+    output = gemini_nodes.SSL_GeminiVideoConfig.execute(native_video, 2, True, True)
+    assert output[0] == {
+        "video": native_video,
+        "fps": 2,
+        "pad_at_start": True,
+        "duration_aware_padding": True,
+    }
+
+
+def test_video_start_padding_matches_resolution_and_half_sampling_interval(monkeypatch):
+    images = torch.ones((4, 3, 5, 3))
+    waveform = torch.ones((1, 2, 8000))
+    video = SimpleNamespace(
+        get_components=lambda: gemini_nodes.Types.VideoComponents(
+            images=images,
+            audio={"waveform": waveform, "sample_rate": 8000},
+            frame_rate=4,
+        ),
+        get_bit_depth=lambda: 8,
+        get_color_space=lambda: "sRGB",
+    )
+    captured = {}
+
+    class CapturingVideo:
+        def __init__(self, components, bit_depth, color_space):
+            captured.update(components=components, bit_depth=bit_depth, color_space=color_space)
+
+        def save_to(self, buffer, format, codec):
+            buffer.write(b"padded-video")
+
+    monkeypatch.setattr(gemini_nodes, "VideoFromComponents", CapturingVideo)
+
+    video_bytes, mime_type = gemini_nodes.SSL_GeminiTextPrompt._serialize_video(video, fps=2, pad_at_start=True)
+
+    assert video_bytes == b"padded-video"
+    assert mime_type == "video/mp4"
+    assert captured["components"].frame_rate == 4
+    assert captured["components"].images.shape == (5, 3, 5, 3)
+    assert torch.count_nonzero(captured["components"].images[0]) == 0
+    assert torch.equal(captured["components"].images[1], images[0])
+    assert captured["components"].audio["waveform"].shape[-1] == 10000
+    assert torch.count_nonzero(captured["components"].audio["waveform"][..., :2000]) == 0
+
+
+def test_duration_aware_padding_preserves_native_fps_and_rounds_down_to_frames(monkeypatch):
+    images = torch.ones((422, 1, 1, 3))
+    video = SimpleNamespace(
+        get_components=lambda: gemini_nodes.Types.VideoComponents(images=images, frame_rate=40),
+        get_duration=lambda: 10.559,
+        get_bit_depth=lambda: 8,
+        get_color_space=lambda: "sRGB",
+    )
+    captured = {}
+
+    class CapturingVideo:
+        def __init__(self, components, bit_depth, color_space):
+            captured["components"] = components
+
+        def save_to(self, buffer, format, codec):
+            buffer.write(b"duration-aware-video")
+
+    monkeypatch.setattr(gemini_nodes, "VideoFromComponents", CapturingVideo)
+
+    gemini_nodes.SSL_GeminiTextPrompt._serialize_video(
+        video,
+        fps=4,
+        pad_at_start=True,
+        duration_aware_padding=True,
+    )
+
+    components = captured["components"]
+    assert components.frame_rate == 40
+    assert components.images.shape[0] == 22 + images.shape[0]
+    assert torch.count_nonzero(components.images[:22]) == 0
+    assert torch.equal(components.images[22], images[0])
 
 
 def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatch):

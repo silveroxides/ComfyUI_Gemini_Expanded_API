@@ -57,7 +57,7 @@ Use the `Expanded Gemini Text/Image` node for text generation:
 - Enter your prompt text in `prompt`.
 - Adjust generation parameters (temperature, top_p, top_k, etc.).
 - If needed, connect images through `image_inputs`. For video, pass a native ComfyUI video through `Configure Gemini Video Input`, then connect its output to `video`.
-- Configured video is normalized to MP4/H.264 and sent with embedded audio at the selected sampling FPS. The normalized video must be smaller than 100 MB.
+- Configured video is normalized to MP4/H.264 and sent with embedded audio at the selected sampling FPS. `pad_at_start` optionally prepends black video and silence. `duration_aware_padding` derives that padding from the video's fractional-second duration and rounds it down to native video frames for comparison testing. The normalized video must be smaller than 100 MB.
 - Enable `use_cache` on the configuration node to reuse unchanged prompt, system instruction, image, and video context through Gemini after the local result cache misses.
 
 ### 3. Proxy Settings
@@ -76,6 +76,13 @@ If you are in China or other regions requiring a proxy:
 - `use_cache`: Enable Gemini API context caching. Disabled by default.
 - `cache_ttl_minutes`: Number of minutes Gemini retains cached context.
 - `cache_seed`: Generation seed used while `use_cache` is enabled.
+
+### Video Input Configuration Node
+
+- `video`: Native ComfyUI video input.
+- `fps`: Gemini sampling rate from 1 through 24 FPS.
+- `pad_at_start`: Prepend matching-resolution black video and silence for half one sampling interval before encoding.
+- `duration_aware_padding`: With start padding enabled, use the video's fractional-second duration rounded down to native video frames instead of the standard padding duration.
 
 ### Text Generation Node
 
