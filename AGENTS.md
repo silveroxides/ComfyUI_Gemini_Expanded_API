@@ -19,6 +19,19 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 
 ## Repository-Specific Instructions
 
+### Gemini API workflow
+
+- Use `$gemini-api-dev` alongside `$comfyui-custom-node-development` for Gemini
+  API development and review in this repository.
+- Preserve `client.models.generate_content`. Do not recommend or perform migration
+  to the Interactions API unless the user explicitly asks to evaluate or implement
+  that migration. A request to evaluate migration does not authorize implementing it.
+- Use current official GenerateContent documentation through the skill's web
+  fallback when its documentation MCP is unavailable. A docs MCP is not required.
+- Verify documentation examples target GenerateContent and apply to the
+  repository's SDK usage before using them. New documentation or skill guidance
+  does not authorize changing API families.
+
 ### Evidence and claim discipline
 
 - Do not present assumptions, plausible explanations, remembered behavior, or
