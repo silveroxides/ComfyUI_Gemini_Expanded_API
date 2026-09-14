@@ -249,53 +249,34 @@ def test_cache_seed_explicitly_enables_seed_widget_control():
 
 
 @pytest.mark.parametrize("use_cache", [False, True])
-def test_seed_generator_is_local_and_drives_retries(structured_client, monkeypatch, use_cache):
+def test_torch_seed_generation_preserves_request_and_fingerprint(structured_client, monkeypatch, use_cache):
     node = gemini_nodes.SSL_GeminiTextPrompt
     def forbidden(*args, **kwargs):
-        raise AssertionError("Seed generation must not use or reseed a global RNG")
+        raise AssertionError("Seed handling must not use global random generators")
     monkeypatch.setattr(gemini_nodes.random, "randint", forbidden)
     monkeypatch.setattr(gemini_nodes.random, "seed", forbidden)
     monkeypatch.setattr(gemini_nodes.np.random, "seed", forbidden)
     monkeypatch.setattr(torch, "manual_seed", forbidden)
     monkeypatch.setattr(torch.cuda, "manual_seed_all", forbidden)
     before = torch.get_rng_state().clone()
-    args = _execute_kwargs(_config(use_cache=use_cache, cache_seed=2**32 + 17))
-    args.update(use_seed=True, seed=2**32 + 17, retry_pattern="retry", max_retries=1)
-    sequences = []
-    for _ in range(2):
-        node._cache.clear()
-        node._seed_map_cache.clear()
-        structured_client.calls.clear()
-        structured_client.responses = [[("final", "retry")], [("final", "done")]]
-        result = node.execute(**args)
-        sequences.append([call["config"].seed for call in structured_client.calls])
-        assert result[2] == sequences[-1][-1]
-    assert sequences[0] == sequences[1]
-    assert sequences[0][0] == 2**32 + 17
-    assert 1 <= sequences[0][1] <= 2147483647
-    assert torch.equal(before, torch.get_rng_state())
-
-
-def test_zero_seed_uses_independent_torch_generator():
-    node = gemini_nodes.SSL_GeminiTextPrompt
-    before = torch.get_rng_state().clone()
-    seed, generator = node._handle_seed(True, 0)
-    assert isinstance(generator, torch.Generator)
-    assert generator.device.type == "cpu"
-    assert 1 <= seed <= 2147483647
-    assert torch.equal(before, torch.get_rng_state())
-    assert node._handle_seed(False, 0) == (None, None)
-
-
-@pytest.mark.parametrize("use_cache", [False, True])
-def test_disabled_seed_stays_omitted_on_image_retry(structured_client, use_cache):
+    generated = node._handle_seed(True, 0)
+    assert 0 <= generated < 2147483647
+    assert node._handle_seed(False, 7) is None
     args = _execute_kwargs(_config(use_cache=use_cache, cache_seed=123))
-    args.update(model="gemini-3-pro-image", include_images=True, use_seed=False, seed=42, retry_pattern="retry", max_retries=1)
+    args.update(use_seed=True, seed=456)
+    first = node.execute(**args)
+    second = node.execute(**args)
+    assert first[2] == second[2] == (123 if use_cache else 456)
+    assert len(structured_client.calls) == 1
+    assert structured_client.calls[0]["config"].seed == first[2]
+    node._cache.clear()
+    structured_client.calls.clear()
     structured_client.responses = [[("final", "retry")], [("final", "done")]]
-    result = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+    result = node.execute(**args, retry_pattern="retry", max_retries=1)
     assert len(structured_client.calls) == 2
-    assert all(call["config"].seed is None for call in structured_client.calls)
-    assert result[2] == 0
+    assert 0 <= result[2] < 2147483647
+    assert structured_client.calls[-1]["config"].seed == result[2]
+    assert torch.equal(before, torch.get_rng_state())
 
 
 def _execute_kwargs(config):
@@ -596,7 +577,7 @@ def test_context_cache_creation_failure_uses_original_request(monkeypatch):
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
 
     assert output[0] == "ok"
-    assert captured["config"].seed is None
+    assert captured["config"].seed == 2
 
 
 def test_missing_context_cache_is_recreated_once(monkeypatch):
