@@ -559,26 +559,26 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     @classmethod
     def _handle_seed(cls, use_seed, seed):
-        actual_seed = None
-        if use_seed:
-            if seed == 0:
-                current_time = int(time.time() * 1000)
-                random_component = random.randint(0, 1000000)
-                actual_seed = (current_time + random_component) % 2147483647
-                print(f"[INFO] Generated random seed: {actual_seed}")
-            else:
-                actual_seed = seed
-                print(f"[INFO] Using specified seed: {actual_seed}")
-
-            random.seed(actual_seed)
-            np.random.seed(actual_seed)
-            torch.manual_seed(actual_seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(actual_seed)
-        else:
+        if not use_seed:
             print("[INFO] Seed not used")
+            return None, None
 
-        return actual_seed
+        generator = torch.Generator(device="cpu")
+        if seed == 0:
+            generator.seed()
+            actual_seed = cls._next_seed(generator)
+            print(f"[INFO] Generated random seed: {actual_seed}")
+        else:
+            generator.manual_seed(seed)
+            actual_seed = seed
+            print(f"[INFO] Using specified seed: {actual_seed}")
+        return actual_seed, generator
+
+    @staticmethod
+    def _next_seed(generator):
+        if generator is None:
+            return None
+        return torch.randint(1, 2**31, (), generator=generator, device="cpu", dtype=torch.int64).item()
 
     @classmethod
     def _build_proxy_url(cls, proxy_host, proxy_port):
@@ -869,7 +869,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             print(padded_system_instruction)
 
         api_seed = cache_seed if use_cache else seed
-        actual_seed = cls._handle_seed(use_seed, api_seed)
+        actual_seed, seed_generator = cls._handle_seed(use_seed, api_seed)
         input_seed = api_seed  # Store the original API seed for retry cache key
 
         # Check if we have a cached successful gemini seed for this input seed
@@ -879,6 +879,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             if cached_gemini_seed is not None:
                 print(f"[INFO] Using cached successful gemini seed {cached_gemini_seed} for input seed {input_seed}")
                 actual_seed = cached_gemini_seed
+                seed_generator.manual_seed(actual_seed)
 
         text_output = ""
         thoughts_output = ""
@@ -1107,7 +1108,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 top_p=top_p,
                 top_k=top_k,
                 max_output_tokens=max_output_tokens,
-                seed=api_seed,
+                seed=actual_seed,
                 include_images=include_images,
                 response_modalities=response_modalities,
                 aspect_ratio=aspect_ratio,
@@ -1124,16 +1125,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 generate_content_config.response_mime_type = "application/json"
                 generate_content_config.response_json_schema = schema_snapshot
 
-            if use_seed and actual_seed is not None:
-                try:
-                    generate_content_config.seed = actual_seed
-                except Exception:
-                    pass
-            elif use_cache:
-                try:
-                    generate_content_config.seed = None
-                except Exception:
-                    pass
+            generate_content_config.seed = actual_seed
 
             # API call in background thread
             start_time = time.time()
@@ -1187,11 +1179,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 max_retries = 1
                 for attempt in range(max_retries):
                     try:
-                        if use_seed and actual_seed is not None:
-                            try:
-                                generate_content_config.seed = actual_seed + attempt
-                            except Exception:
-                                pass
                         response = generate_once()
                         if not (response.candidates and getattr(response.candidates[0].content, 'parts', None)):
                             finish_reason = "UNKNOWN"
@@ -1273,18 +1260,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in response. Retry attempt {retry_attempt}/{max_retries}")
 
-                                    # Generate new random gemini seed for retry
-                                    current_time = int(time.time() * 1000)
-                                    random_component = random.randint(0, 1000000)
-                                    actual_seed = (current_time + random_component) % 2147483647
-                                    print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
-
-                                    # Update config seed and retry
-                                    if use_seed:
-                                        try:
-                                            generate_content_config.seed = actual_seed
-                                        except Exception:
-                                            pass
+                                    actual_seed = cls._next_seed(seed_generator)
+                                    generate_content_config.seed = actual_seed
+                                    print(f"[INFO] Retrying with generation seed: {actual_seed}")
 
                                     # Create new queue and thread for retry
                                     result_queue = queue.Queue()
@@ -1309,18 +1287,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in error. Retry attempt {retry_attempt}/{max_retries}")
 
-                                    # Generate new random gemini seed for retry
-                                    current_time = int(time.time() * 1000)
-                                    random_component = random.randint(0, 1000000)
-                                    actual_seed = (current_time + random_component) % 2147483647
-                                    print(f"[INFO] Retrying with new gemini seed: {actual_seed}")
-
-                                    # Update config seed and retry
-                                    if use_seed:
-                                        try:
-                                            generate_content_config.seed = actual_seed
-                                        except Exception:
-                                            pass
+                                    actual_seed = cls._next_seed(seed_generator)
+                                    generate_content_config.seed = actual_seed
+                                    print(f"[INFO] Retrying with generation seed: {actual_seed}")
 
                                     # Create new queue and thread for retry
                                     result_queue = queue.Queue()

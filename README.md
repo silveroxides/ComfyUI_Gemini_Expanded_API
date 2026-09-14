@@ -77,6 +77,8 @@ If you are in China or other regions requiring a proxy:
 - `cache_ttl_minutes`: Number of minutes Gemini retains cached context.
 - `cache_seed`: Generation seed used while `use_cache` is enabled.
 
+With `use_seed` enabled, the selected nonzero seed is sent unchanged; zero chooses a fresh seed. Retry seeds come from a dedicated CPU `torch.Generator` for that execution, without reseeding global Python, NumPy, PyTorch, or CUDA RNGs. Fixed inputs produce a repeatable retry sequence. With `use_seed` disabled, no seed is sent, including image requests and retries. Input fingerprinting and cached-result reuse are unchanged.
+
 ### Video Input Configuration Node
 
 - `video`: Native ComfyUI video input.
