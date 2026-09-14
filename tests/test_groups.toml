@@ -16,3 +16,8 @@ frontend_tests = [
 paths = ["__init__.py", "response_schema.py", "web/response_schema.js", "web/response_schema_model.js", "web/response_schema_widgets.js", "web/response_schema_style.js", "package.json", "package-lock.json"]
 python_tests = ["tests/test_response_schema.py"]
 frontend_tests = ["tests/test_response_schema_model.mjs", "tests/test_response_schema_widgets.mjs"]
+
+[groups.gemini_config_frontend]
+paths = ["web/gemini_config.js", "tests/test_gemini_config.mjs"]
+python_tests = []
+frontend_tests = ["tests/test_gemini_config.mjs"]
