@@ -279,6 +279,34 @@ def test_torch_seed_generation_preserves_request_and_fingerprint(structured_clie
     assert torch.equal(before, torch.get_rng_state())
 
 
+@pytest.mark.parametrize("value", [130610794845696, 450167232274663, 303772010844099, 854079365259032])
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_high_precision_seed_is_retained_in_fingerprint_but_mapped_for_api(structured_client, use_cache, value):
+    node = gemini_nodes.SSL_GeminiTextPrompt
+    args = _execute_kwargs(_config(use_cache=use_cache, cache_seed=value))
+    args.update(use_seed=True, seed=value)
+    first = node.execute(**args)
+    wire_seed = structured_client.calls[-1]["config"].seed
+    assert 0 <= wire_seed < 2**31
+    assert first[2] == wire_seed
+    fingerprint = next(iter(node._cache))
+    assert fingerprint[14] == value
+    if use_cache:
+        assert fingerprint[17] == value
+    node.execute(**args)
+    assert len(structured_client.calls) == 1
+    node._cache.clear()
+    assert node.execute(**args)[2] == wire_seed
+    assert structured_client.calls[-1]["config"].seed == wire_seed
+
+
+def test_unseeded_image_branch_also_respects_wire_seed_range(structured_client):
+    args = _execute_kwargs(_config())
+    args.update(model="gemini-3-pro-image", include_images=True, use_seed=False, seed=854079365259032)
+    gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+    assert 0 <= structured_client.calls[-1]["config"].seed < 2**31
+
+
 def _execute_kwargs(config):
     return {
         "config": config,

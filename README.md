@@ -77,7 +77,7 @@ If you are in China or other regions requiring a proxy:
 - `cache_ttl_minutes`: Number of minutes Gemini retains cached context.
 - `cache_seed`: Generation seed used while `use_cache` is enabled.
 
-Generated seeds use a dedicated CPU `torch.Generator`, without Python-random/NumPy seed generation or global RNG reseeding. Existing API-seed selection, dispatch behavior, input fingerprinting, and cached-result reuse are preserved.
+Generated seeds use a dedicated CPU `torch.Generator`, without Python-random/NumPy seed generation or global RNG reseeding. Full input seeds remain in the input fingerprint. Nonzero seeds outside the API's INT32 range deterministically seed the local generator, which produces an INT32-safe API seed; already valid positive seeds remain unchanged. Zero retains its fresh-seed behavior. `final_actual_seed` reports the selected API seed when seeding is enabled.
 
 ### Video Input Configuration Node
 

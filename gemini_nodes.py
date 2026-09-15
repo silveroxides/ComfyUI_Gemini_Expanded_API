@@ -562,16 +562,19 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         if not use_seed:
             print("[INFO] Seed not used")
             return None
-        if seed != 0:
+        if 0 < seed < 2**31:
             print(f"[INFO] Using specified seed: {seed}")
             return seed
 
         generator = torch.Generator(device="cpu")
-        generator.seed()
+        if seed == 0:
+            generator.seed()
+        else:
+            generator.manual_seed(seed)
         actual_seed = torch.randint(
             0, 2147483647, (), generator=generator, device="cpu", dtype=torch.int64
         ).item()
-        print(f"[INFO] Generated random seed: {actual_seed}")
+        print(f"[INFO] Generated API seed: {actual_seed}")
         return actual_seed
 
     @classmethod
@@ -872,7 +875,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             cached_gemini_seed = cls._seed_map_cache.get(seed_cache_key)
             if cached_gemini_seed is not None:
                 print(f"[INFO] Using cached successful gemini seed {cached_gemini_seed} for input seed {input_seed}")
-                actual_seed = cached_gemini_seed
+                actual_seed = cls._handle_seed(True, cached_gemini_seed)
 
         text_output = ""
         thoughts_output = ""
@@ -1101,7 +1104,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 top_p=top_p,
                 top_k=top_k,
                 max_output_tokens=max_output_tokens,
-                seed=api_seed,
+                seed=actual_seed if use_seed else api_seed,
                 include_images=include_images,
                 response_modalities=response_modalities,
                 aspect_ratio=aspect_ratio,
@@ -1134,6 +1137,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
 
             def generate_once():
+                # Apply the wire limit even on legacy unseeded image branches.
+                if generate_content_config.seed is not None and not -(2**31) <= generate_content_config.seed < 2**31:
+                    generate_content_config.seed = cls._handle_seed(True, generate_content_config.seed)
                 if not use_cache or skip_context_cache:
                     return client.models.generate_content(
                         model=model,
