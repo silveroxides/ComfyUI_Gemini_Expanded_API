@@ -183,6 +183,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     _context_cache: dict = {}
     _context_cache_lock = threading.Lock()
     GEMINI_3_7_FLASH = "gemini-3.7-flash"
+    GEMINI_3_8_FLASH = "gemini-3.8-flash"
     VIDEO_MIME_TYPE = "video/mp4"
     VIDEO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
     VERTEX_CACHE_INLINE_LIMIT_BYTES = 10 * 1024 * 1024
@@ -196,11 +197,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     THINKING_MODELS = [
         "gemini-1.5-pro-002", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25",
-        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_4_FLASH_PREVIEW
+    "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_FLASH_PREVIEW
     ]
     IMAGE_MODELS = [
         "gemini-2.5-flash-image",
@@ -233,7 +234,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -249,7 +250,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.Int.Input("seed", default=0, min=0, max=2147483647),
                 IO.Int.Input("timeout", default=30, min=15, max=300, step=15),
                 IO.Boolean.Input("include_thoughts", default=False),
-                IO.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. If this is set, then thinking budget is ignored. Gemini 3.7 Flash always uses this control, defaults to medium, and ignores thinking_budget."),
+                IO.Combo.Input("thinking_level", options=["None", "low", "medium", "high"], default="None", tooltip="Does not work at the same time as 'thinking_budget'. If this is set, then thinking budget is ignored. Gemini 3.7/3.8 Flash always uses this control, defaults to medium, and ignores thinking_budget."),
                 IO.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf. This changes tokens consumed."),
                 IO.String.Input("retry_pattern", default="", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
@@ -435,18 +436,22 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return video_bytes, cls.VIDEO_MIME_TYPE
 
     @classmethod
-    def _resolve_gemini_3_7_thinking_level(cls, thinking_level):
+    def _resolve_gemini_3_7_thinking_level(cls, thinking_level, model_name=None):
         if thinking_level is None or thinking_level == "None":
             return "medium"
         if thinking_level == "minimal":
+            if model_name == cls.GEMINI_3_8_FLASH:
+                raise ValueError(
+                    "gemini-3.8-flash thinking_level must be low, medium, or high."
+                )
             print(
-                "[WARNING] Gemini 3.7 Flash does not support minimal "
+                f"[WARNING] {model_name or 'Gemini 3.7 Flash'} does not support minimal "
                 "thinking; using low instead."
             )
             return "low"
         if thinking_level not in {"low", "medium", "high"}:
             raise ValueError(
-                "Gemini 3.7 Flash thinking_level must be low, medium, or high."
+                f"{model_name or 'Gemini 3.7 Flash'} thinking_level must be low, medium, or high."
             )
         return thinking_level
 
@@ -494,8 +499,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             eff_image_size = "None" if image_size in (None, "None") else str(image_size)
             # When generating images, thinking params are ignored
 
-        elif model == cls.GEMINI_3_7_FLASH:
-            eff_thinking_level = cls._resolve_gemini_3_7_thinking_level(thinking_level)
+        elif model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH):
+            eff_thinking_level = cls._resolve_gemini_3_7_thinking_level(thinking_level, model)
             eff_include_thoughts = include_thoughts
 
         elif model in cls.GEN3_THINKING_MODELS and thinking_level is not None and thinking_level != "None":
@@ -745,13 +750,13 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
-        if model == cls.GEMINI_3_7_FLASH:
+        if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH):
             return types.GenerateContentConfig(
                 max_output_tokens=max_output_tokens,
                 safety_settings=safety,
                 thinking_config=types.ThinkingConfig(
                     include_thoughts=include_thoughts,
-                    thinking_level=cls._resolve_gemini_3_7_thinking_level(thinking_level),
+                    thinking_level=cls._resolve_gemini_3_7_thinking_level(thinking_level, model),
                 ),
                 response_modalities=response_modalities,
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],

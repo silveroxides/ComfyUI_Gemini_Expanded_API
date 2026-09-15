@@ -54,6 +54,7 @@ def structured_client(monkeypatch):
 @pytest.mark.parametrize("model, settings", [
     ("gemini-2.5-flash", {}), ("gemini-3.1-pro-preview", {"thinking_level": "high"}),
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_7_FLASH, {"thinking_level": "medium"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_8_FLASH, {"thinking_level": "medium"}),
 ])
 @pytest.mark.parametrize("client_config", [{}, {"vertexai_express": True}, {"use_vertexai_env": True, "vertexai_project": "test", "vertexai_location": "global"}])
 def test_builder_schema_reaches_generate_content(structured_client, monkeypatch, model, settings, client_config):
@@ -1191,6 +1192,7 @@ def test_confirmed_current_models_are_visible_without_deprecated_image_aliases()
 
     for model in (
         "gemini-3.7-flash",
+        "gemini-3.8-flash",
         "gemini-3.5-flash",
         "gemini-3.1-flash-image",
         "gemini-3.1-flash-lite-image",
@@ -1352,6 +1354,38 @@ def test_gemini_3_7_uses_supported_thinking_levels(selected_level, expected_leve
     assert config.temperature is None
     assert config.top_p is None
     assert config.top_k is None
+
+
+def test_gemini_3_8_uses_gemini_3_thinking_config():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-3.8-flash",
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        max_output_tokens=1024,
+        seed=7,
+        include_images=False,
+        response_modalities=["TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=4096,
+        include_thoughts=True,
+        media_resolution="unspecified",
+    )
+
+    assert config.thinking_config.thinking_level.value == "MEDIUM"
+    assert config.thinking_config.thinking_budget is None
+    assert config.temperature is None
+    assert config.top_p is None
+    assert config.top_k is None
+
+
+def test_gemini_3_8_rejects_minimal_thinking_level():
+    with pytest.raises(ValueError, match="gemini-3.8-flash thinking_level"):
+        gemini_nodes.SSL_GeminiTextPrompt._resolve_gemini_3_7_thinking_level(
+            "minimal", gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_8_FLASH
+        )
 
 
 def test_gemini_3_7_fingerprint_matches_effective_request_controls():
