@@ -60,6 +60,7 @@ def mock_interactions_client(monkeypatch):
                 output_text=resp.get("text", ""),
                 output_image=out_img,
                 steps=steps,
+                usage=SimpleNamespace(total_cached_tokens=resp.get("cached_tokens", 0)) if "cached_tokens" in resp else None,
             )
 
     class FakeClient:
@@ -399,3 +400,41 @@ def test_timeout_fallback(mock_interactions_client, monkeypatch):
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
     assert output[0] == "Custom timeout message"
+
+
+def test_interactions_api_key_config_with_cache():
+    output = interactions_nodes.SSL_GeminiInteractionsAPIKeyConfig.execute(
+        api_key="secret123",
+        api_version="v1beta",
+        use_vertexai_env=False,
+        vertexai_express=False,
+        use_cache=True,
+        cache_ttl_minutes=120,
+        cache_seed=999,
+    )
+    config = output[0]
+    assert config["use_cache"] is True
+    assert config["cache_ttl_minutes"] == 120
+    assert config["cache_seed"] == 999
+
+
+def test_caching_with_cache_seed_and_usage(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "Cached response", "id": "int_cache_hit_1", "cached_tokens": 4096},
+    ]
+
+    config = _config(use_cache=True, cache_seed=777)
+    args = _execute_kwargs(config=config, use_seed=True, seed=123)
+    out1 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert out1[0] == "Cached response"
+    assert out1[2] == 777  # actual_seed matches cache_seed when use_cache=True
+    assert len(mock_interactions_client.calls) == 1
+    assert mock_interactions_client.calls[0]["generation_config"]["seed"] == 777
+
+    # Second call with identical params hits local result cache
+    out2 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+    assert out2[0] == "Cached response"
+    assert out2[2] == 777
+    assert len(mock_interactions_client.calls) == 1
+

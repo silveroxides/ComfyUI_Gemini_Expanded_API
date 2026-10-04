@@ -47,6 +47,9 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
                 IO.String.Input("vertexai_project", optional=True, tooltip="Google Cloud Project ID."),
                 IO.String.Input("vertexai_location", optional=True, tooltip="Google Cloud Location/Region (e.g. us-central1)."),
                 IO.String.Input("google_application_credentials", default="", optional=True, multiline=False, tooltip="Optional absolute path to an application default credentials JSON file for Vertex AI."),
+                IO.Boolean.Input("use_cache", default=False, optional=True, tooltip="Enable context caching workflow. Interactions API uses implicit server-side caching and session storage."),
+                IO.Int.Input("cache_ttl_minutes", default=60, min=1, step=1, optional=True, tooltip="Context cache TTL minutes (retained for config compatibility)."),
+                IO.Int.Input("cache_seed", default=0, min=0, max=2147483647, control_after_generate=True, optional=True, tooltip="Gemini generation seed used when context caching is enabled."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -56,7 +59,8 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
     @classmethod
     def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool,
                 vertexai_project: str | None = "", vertexai_location: str | None = "",
-                google_application_credentials: str | None = "") -> IO.NodeOutput:
+                google_application_credentials: str | None = "", use_cache: bool = False,
+                cache_ttl_minutes: int = 60, cache_seed: int = 0) -> IO.NodeOutput:
         config = {
             "api_key": api_key,
             "api_version": api_version,
@@ -65,6 +69,9 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
             "vertexai_project": vertexai_project,
             "vertexai_location": vertexai_location,
             "google_application_credentials": google_application_credentials,
+            "use_cache": use_cache,
+            "cache_ttl_minutes": cache_ttl_minutes,
+            "cache_seed": cache_seed,
         }
         return IO.NodeOutput(config)
 
@@ -352,7 +359,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                              image_inputs: IO.Autogrow.Type | None = None,
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
-                                             retry_pattern="", max_retries=3, image_size="None",
+                                             retry_pattern="", max_retries=3, use_cache=False,
+                                             cache_ttl_minutes=60, cache_seed=0, image_size="None",
                                              store=True, previous_interaction_id="", schema_identity=None):
 
         def get_tensor_hash(tensor):
@@ -391,6 +399,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             eff_include_thoughts = include_thoughts
 
         sanitized_config = dict(config)
+        for cache_setting in ("use_cache", "cache_ttl_minutes", "cache_seed"):
+            sanitized_config.pop(cache_setting, None)
         api_key = sanitized_config.get("api_key")
         if api_key:
             sanitized_config["api_key"] = f"sha256:{hashlib.sha256(str(api_key).encode('utf-8')).hexdigest()}"
@@ -407,6 +417,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             str(bypass_mode),
             use_seed,
             int(seed) if use_seed else 0,
+            bool(use_cache),
+            int(cache_ttl_minutes) if use_cache else 0,
+            int(cache_seed) if use_cache and use_seed else 0,
             video_hash,
             video_mime_type,
             video_fps,
@@ -511,6 +524,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiInteractionsTextPrompt execute called, model: {model}")
+        use_cache = bool(config.get("use_cache", False))
+        cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
+        cache_seed = int(config.get("cache_seed", 0))
+
         schema_identity = None
         schema_snapshot = None
         if response_schema is not None:
@@ -534,7 +551,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             )
         except Exception as e:
             print(f"[ERROR] Error processing input video: {e}")
-            output_seed = seed if use_seed else 0
+            output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
             return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "", "")
 
         video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
@@ -545,8 +562,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
             include_thoughts, thinking_level, media_resolution,
-            retry_pattern, max_retries, image_size=image_size,
-            store=store, previous_interaction_id=previous_interaction_id,
+            retry_pattern, max_retries, use_cache=use_cache,
+            cache_ttl_minutes=cache_ttl_minutes, cache_seed=cache_seed,
+            image_size=image_size, store=store,
+            previous_interaction_id=previous_interaction_id,
             schema_identity=schema_identity,
         )
 
@@ -564,8 +583,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         if bypass_mode == "system_instruction" or bypass_mode == "both":
             padded_system_instruction = cls._pad_text_with_joiners(system_instruction)
 
-        actual_seed = cls._handle_seed(use_seed, seed)
-        input_seed = seed
+        api_seed = cache_seed if use_cache else seed
+        actual_seed = cls._handle_seed(use_seed, api_seed)
+        input_seed = api_seed
 
         seed_cache_key = (input_seed, fingerprint)
         if use_seed and retry_pattern and max_retries > 0:
@@ -892,6 +912,12 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
                     if not current_text_output and model_output_texts:
                         current_text_output = "".join(model_output_texts)
+
+                    usage = getattr(api_response, "usage", None)
+                    if usage:
+                        cached_tokens = getattr(usage, "total_cached_tokens", 0) or getattr(usage, "cached_content_token_count", 0) or 0
+                        if cached_tokens:
+                            print(f"[INFO] Gemini Interactions implicit cache hit: {cached_tokens} cached tokens")
 
                     # Also check output_image convenience property
                     if current_image_tensor is None and hasattr(api_response, "output_image"):
