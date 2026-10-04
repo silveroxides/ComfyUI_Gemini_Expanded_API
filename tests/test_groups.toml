@@ -21,3 +21,15 @@ frontend_tests = ["tests/test_response_schema_model.mjs", "tests/test_response_s
 paths = ["web/gemini_config.js", "tests/test_gemini_config.mjs"]
 python_tests = []
 frontend_tests = ["tests/test_gemini_config.mjs"]
+
+[groups.interactions_node]
+paths = [
+  "__init__.py",
+  "interactions_nodes.py",
+]
+python_tests = [
+  "tests/test_interactions_nodes.py",
+]
+frontend_tests = [
+
+]
