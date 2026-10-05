@@ -720,6 +720,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 vertexai_express = config.get("vertexai_express", False)
                 use_vertexai_env = config.get("use_vertexai_env", False)
                 api_version = config.get("api_version") or "v1beta"
+                if (use_vertexai_env or vertexai_express) and api_version == "v1beta":
+                    api_version = "v1beta1"
                 project = config.get("vertexai_project")
                 location = config.get("vertexai_location")
                 credentials_path = config.get("google_application_credentials")
@@ -840,10 +842,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             media_items = []
 
             if video_bytes is not None:
-                video_b64 = base64.b64encode(video_bytes).decode("utf-8")
+                video_stream = BytesIO(video_bytes)
                 v_item = {
                     "type": "video",
-                    "data": video_b64,
+                    "data": video_stream,
                     "mime_type": video_mime_type,
                 }
                 if media_resolution and media_resolution != "unspecified":
@@ -858,10 +860,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                         pil_img = Image.fromarray(img_array)
                         img_byte_arr = BytesIO()
                         pil_img.save(img_byte_arr, format='PNG')
-                        img_b64 = base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
+                        img_byte_arr.seek(0)
                         img_item = {
                             "type": "image",
-                            "data": img_b64,
+                            "data": img_byte_arr,
                             "mime_type": "image/png",
                         }
                         if media_resolution and media_resolution != "unspecified":

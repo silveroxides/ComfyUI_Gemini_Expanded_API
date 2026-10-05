@@ -206,8 +206,15 @@ def test_multimodal_image_input(mock_interactions_client):
     img_item = call["input"][0]
     assert img_item["type"] == "image"
     assert img_item["mime_type"] == "image/png"
-    assert "data" in img_item
+    assert isinstance(img_item["data"], BytesIO)
+    assert img_item["data"].tell() == 0
+    assert len(img_item["data"].getvalue()) > 0
     assert img_item["resolution"] == "high"
+
+    from google.genai._gaos.types.interactions.imagecontent import ImageContent
+    validated_img = ImageContent(**img_item)
+    assert isinstance(validated_img.data, str)
+    assert len(validated_img.data) > 0
     text_item = call["input"][1]
     assert text_item["type"] == "text"
     assert text_item["text"] == "Describe this image"
@@ -229,7 +236,12 @@ def test_multimodal_video_input(mock_interactions_client):
     vid_item = call["input"][0]
     assert vid_item["type"] == "video"
     assert vid_item["mime_type"] == "video/mp4"
-    assert base64.b64decode(vid_item["data"]) == video_data
+    assert isinstance(vid_item["data"], BytesIO)
+    assert vid_item["data"].getvalue() == video_data
+
+    from google.genai._gaos.types.interactions.videocontent import VideoContent
+    validated_vid = VideoContent(**vid_item)
+    assert base64.b64decode(validated_vid.data) == video_data
 
 
 def test_structured_output_with_schema(mock_interactions_client):
