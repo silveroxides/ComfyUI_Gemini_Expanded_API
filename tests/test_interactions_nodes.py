@@ -56,7 +56,8 @@ def mock_interactions_client(monkeypatch):
 
             return SimpleNamespace(
                 id=resp.get("id", "int_123"),
-                status="completed",
+                status=resp.get("status", "completed"),
+                errors=resp.get("errors", None),
                 output_text=resp.get("text", ""),
                 output_image=out_img,
                 steps=steps,
@@ -183,6 +184,9 @@ def test_basic_text_generation(mock_interactions_client):
     assert call["system_instruction"] == "test system instruction"
     assert call["store"] is True
     assert "safety_settings" in call
+    assert len(call["safety_settings"]) == 10
+    assert {s["type"] for s in call["safety_settings"]} == set(interactions_nodes.SSL_GeminiInteractionsTextPrompt.ALL_HARM_CATEGORIES)
+    assert all(s["threshold"] == "block_none" for s in call["safety_settings"])
 
 
 def test_multimodal_image_input(mock_interactions_client):
@@ -437,4 +441,70 @@ def test_caching_with_cache_seed_and_usage(mock_interactions_client):
     assert out2[0] == "Cached response"
     assert out2[2] == 777
     assert len(mock_interactions_client.calls) == 1
+
+
+def test_safety_config_node():
+    schema = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.define_schema()
+    assert schema.node_id == "SSL_GeminiInteractionsSafetyConfig"
+    assert schema.category == "API/Gemini/Interactions"
+
+    output = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.execute(
+        harassment="off",
+        hate_speech="block_none",
+        jailbreak="block_only_high",
+        method="severity",
+    )
+    settings = output[0]
+    assert isinstance(settings, list)
+    settings_dict = {s["type"]: s for s in settings}
+    assert settings_dict["harassment"]["threshold"] == "off"
+    assert settings_dict["harassment"]["method"] == "severity"
+    assert settings_dict["hate_speech"]["threshold"] == "block_none"
+    assert settings_dict["jailbreak"]["threshold"] == "block_only_high"
+
+
+def test_safety_preferences_off_and_method(mock_interactions_client):
+    mock_interactions_client.responses = [{"text": "Unrestricted response", "id": "int_safe_1"}]
+    args = _execute_kwargs(safety_level="off", safety_method="severity")
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0] == "Unrestricted response"
+    call = mock_interactions_client.calls[0]
+    assert "safety_settings" in call
+    assert len(call["safety_settings"]) == 10
+    assert all(s["threshold"] == "off" for s in call["safety_settings"])
+    assert all(s["method"] == "severity" for s in call["safety_settings"])
+
+
+def test_safety_config_input_override(mock_interactions_client):
+    mock_interactions_client.responses = [{"text": "Granular safety response", "id": "int_safe_2"}]
+    custom_safety = [
+        {"type": "harassment", "threshold": "block_only_high"},
+        {"type": "jailbreak", "threshold": "off"},
+    ]
+    args = _execute_kwargs(
+        safety_level="block_none",  # Should be overridden by safety_config
+        safety_config=custom_safety,
+    )
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0] == "Granular safety response"
+    call = mock_interactions_client.calls[0]
+    assert call["safety_settings"] == custom_safety
+
+
+def test_safety_block_error_reporting(mock_interactions_client):
+    mock_interactions_client.responses = [{
+        "text": "",
+        "id": "int_blocked",
+        "errors": [SimpleNamespace(code="SAFETY", message="Content was blocked by safety policy")],
+        "status": "failed",
+    }]
+
+    args = _execute_kwargs()
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0].startswith("API call/processing error:")
+    assert "Content was blocked by safety policy" in output[0]
+
 
