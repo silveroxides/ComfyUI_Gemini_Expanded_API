@@ -841,17 +841,6 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
             media_items = []
 
-            if video_bytes is not None:
-                video_stream = BytesIO(video_bytes)
-                v_item = {
-                    "type": "video",
-                    "data": video_stream,
-                    "mime_type": video_mime_type,
-                }
-                if media_resolution and media_resolution != "unspecified":
-                    v_item["resolution"] = media_resolution.lower()
-                media_items.append(v_item)
-
             if image_frames:
                 try:
                     for _, _, image_frame in image_frames:
@@ -875,11 +864,22 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     )
                     print(
                         f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
-                        f"total={len(media_items) - (1 if video_bytes is not None else 0)}"
+                        f"total={len(media_items)}"
                     )
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
                     return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "", "")
+
+            if video_bytes is not None:
+                video_stream = BytesIO(video_bytes)
+                v_item = {
+                    "type": "video",
+                    "data": video_stream,
+                    "mime_type": video_mime_type,
+                }
+                if media_resolution and media_resolution != "unspecified":
+                    v_item["resolution"] = media_resolution.lower()
+                media_items.append(v_item)
 
             text_item = {"type": "text", "text": padded_prompt}
             if media_items:

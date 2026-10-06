@@ -531,9 +531,10 @@ def test_context_cache_reuses_full_input_after_local_fingerprint_miss(monkeypatc
     create_config = captured["creates"][0]["config"]
     assert create_config.system_instruction == "test system instruction"
     assert create_config.ttl == "900s"
-    assert create_config.contents[0].parts[0].inline_data.data == b"normalized-video"
-    assert create_config.contents[0].parts[0].inline_data.mime_type == "video/mp4"
-    assert create_config.contents[0].parts[0].video_metadata.fps == 2
+    assert create_config.contents[0].parts[0].inline_data.mime_type == "image/png"
+    assert create_config.contents[0].parts[1].inline_data.data == b"normalized-video"
+    assert create_config.contents[0].parts[1].inline_data.mime_type == "video/mp4"
+    assert create_config.contents[0].parts[1].video_metadata.fps == 2
     assert create_config.contents[0].parts[-1].text == "test prompt"
     assert len(create_config.contents[0].parts) == 3
     assert len(captured["generations"]) == 2

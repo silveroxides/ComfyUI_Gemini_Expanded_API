@@ -1012,7 +1012,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
 
-            # Prepare contents (video + images + prompt)
+            # Prepare contents (images + video + prompt)
             image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
             context_image_hashes = []
             media_parts = []
@@ -1021,18 +1021,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 + len(padded_prompt.encode("utf-8"))
                 + len(padded_system_instruction.encode("utf-8"))
             )
-
-            if video_bytes is not None:
-                if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
-                    video_part = types.Part.from_bytes(
-                        data=video_bytes,
-                        mime_type=video_mime_type,
-                        media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
-                    )
-                else:
-                    video_part = types.Part.from_bytes(data=video_bytes, mime_type=video_mime_type)
-                video_part.video_metadata = types.VideoMetadata(fps=video_fps)
-                media_parts.append(video_part)
 
             if image_frames:
                 try:
@@ -1070,6 +1058,18 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 except Exception as e:
                     print(f"[ERROR] Error processing input image: {str(e)}")
                     return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
+
+            if video_bytes is not None:
+                if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
+                    video_part = types.Part.from_bytes(
+                        data=video_bytes,
+                        mime_type=video_mime_type,
+                        media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
+                    )
+                else:
+                    video_part = types.Part.from_bytes(data=video_bytes, mime_type=video_mime_type)
+                video_part.video_metadata = types.VideoMetadata(fps=video_fps)
+                media_parts.append(video_part)
             if media_parts:
                 contents = [
                     types.UserContent(

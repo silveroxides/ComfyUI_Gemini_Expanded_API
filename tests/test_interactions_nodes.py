@@ -244,6 +244,25 @@ def test_multimodal_video_input(mock_interactions_client):
     assert base64.b64decode(validated_vid.data) == video_data
 
 
+def test_multimodal_image_and_video_ordering(mock_interactions_client):
+    mock_interactions_client.responses = [{"text": "Found image and video", "id": "int_both_1"}]
+    video_data = b"fake video bytes"
+    image_tensor = torch.zeros(1, 16, 16, 3)
+    args = _execute_kwargs(
+        video={"video": FakeVideo(video_data), "fps": 2, "pad_at_start": False, "duration_aware_padding": False},
+        image_inputs={"image_1": image_tensor},
+        prompt="Describe image and video",
+    )
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+    assert output[0] == "Found image and video"
+    call = mock_interactions_client.calls[0]
+    items = call["input"]
+    assert len(items) == 3
+    assert items[0]["type"] == "image"
+    assert items[1]["type"] == "video"
+    assert items[2]["type"] == "text"
+
+
 def test_structured_output_with_schema(mock_interactions_client):
     schema = {
         "type": "object",
