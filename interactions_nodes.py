@@ -580,7 +580,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
     @staticmethod
     def _parse_boolean_environment_variable(name: str) -> bool | None:
-        value = os.environ.get(name)
+        value = os.getenv(name)
         if value is None:
             return None
 
@@ -751,10 +751,12 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                             )
                             credentials_cache_key = absolute_credentials_path
 
-                        env_proj = os.environ["GOOGLE_CLOUD_PROJECT"].strip() if "GOOGLE_CLOUD_PROJECT" in os.environ else (project or credential_project)
+                        env_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+                        env_proj = env_project.strip() if env_project else (project or credential_project)
                         assert env_proj, "GOOGLE_CLOUD_PROJECT is empty"
 
-                        env_loc = os.environ["GOOGLE_CLOUD_LOCATION"].strip() if "GOOGLE_CLOUD_LOCATION" in os.environ else location
+                        env_location = os.getenv("GOOGLE_CLOUD_LOCATION")
+                        env_loc = env_location.strip() if env_location else location
                         assert env_loc, "GOOGLE_CLOUD_LOCATION is empty"
 
                         client_key = ("vertexai_env", env_use, env_proj, env_loc, api_version, proxy_url, credentials_cache_key)

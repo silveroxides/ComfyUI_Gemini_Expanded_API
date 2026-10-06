@@ -1,3 +1,4 @@
+import os
 import hashlib
 import json
 import threading
@@ -1181,7 +1182,7 @@ def test_proxy_uses_sdk_http_options_without_mutating_environment(monkeypatch):
     assert captured["http_options"].client_args == {
         "proxy": "http://proxy.example:8080"
     }
-    assert gemini_nodes.os.environ["HTTP_PROXY"] == "http://existing-proxy:9000"
+    assert os.environ["HTTP_PROXY"] == "http://existing-proxy:9000"
 
 
 def test_confirmed_current_models_are_visible_without_deprecated_image_aliases():
