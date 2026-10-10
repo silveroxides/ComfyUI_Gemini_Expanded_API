@@ -22,12 +22,127 @@ import random
 import hashlib
 import warnings
 from typing import Any, Tuple
+from datetime import datetime
 
 from .gemini_nodes import (
     GetKeyAPI,
     SSL_GeminiAPIKeyConfig,
     SSL_GeminiVideoConfig,
 )
+
+
+class GeminiInteractionsStoreManager:
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_path(cls) -> str:
+        try:
+            user_dir = folder_paths.get_user_directory()
+            if user_dir and os.path.isdir(user_dir):
+                return os.path.join(user_dir, "gemini_interactions.json")
+        except Exception:
+            pass
+        output_dir = folder_paths.get_output_directory()
+        return os.path.join(output_dir, "gemini_interactions.json")
+
+    @classmethod
+    def load(cls) -> dict[str, Any]:
+        path = cls.get_path()
+        if not os.path.exists(path):
+            return {"last_interaction_id": "", "sessions": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            print(f"[WARNING] Could not read Gemini interactions store: {e}")
+        return {"last_interaction_id": "", "sessions": []}
+
+    @classmethod
+    def save(cls, data: dict[str, Any]) -> None:
+        path = cls.get_path()
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[WARNING] Could not save Gemini interactions store: {e}")
+
+    @classmethod
+    def get_last_interaction_id(cls) -> str:
+        with cls._lock:
+            data = cls.load()
+            return str(data.get("last_interaction_id") or "").strip()
+
+    @classmethod
+    def record_interaction(cls, interaction_id: str, model: str) -> None:
+        if not interaction_id or not str(interaction_id).strip():
+            return
+        interaction_id = str(interaction_id).strip()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with cls._lock:
+            data = cls.load()
+            sessions = data.get("sessions")
+            if not isinstance(sessions, list):
+                sessions = []
+
+            existing = None
+            for s in sessions:
+                if isinstance(s, dict) and s.get("id") == interaction_id:
+                    existing = s
+                    break
+
+            if existing is not None:
+                existing["updated_at"] = now_str
+                existing["turn_count"] = int(existing.get("turn_count", 1)) + 1
+                if model:
+                    existing["model"] = model
+            else:
+                new_session = {
+                    "id": interaction_id,
+                    "created_at": now_str,
+                    "updated_at": now_str,
+                    "model": model or "unknown",
+                    "turn_count": 1,
+                }
+                sessions.append(new_session)
+
+            data["sessions"] = sessions
+            data["last_interaction_id"] = interaction_id
+            cls.save(data)
+
+    @classmethod
+    def clear(cls) -> None:
+        with cls._lock:
+            cls.save({"last_interaction_id": "", "sessions": []})
+
+    @classmethod
+    def format_session_table(cls, limit: int = 10) -> str:
+        with cls._lock:
+            data = cls.load()
+            sessions = data.get("sessions") or []
+            if not sessions:
+                return "No interactions stored."
+
+            sorted_sessions = sorted(
+                sessions,
+                key=lambda x: str(x.get("updated_at") or x.get("created_at") or ""),
+                reverse=True
+            )[:limit]
+
+            lines = [
+                f"{'ID':<45} | {'Model':<24} | {'Turns':<5} | {'Created':<19} | {'Last Updated':<19}",
+                f"{'-'*45}-+-{'-'*24}-+-{'-'*5}-+-{'-'*19}-+-{'-'*19}",
+            ]
+            for s in sorted_sessions:
+                sid = str(s.get("id") or "")[:45]
+                smod = str(s.get("model") or "")[:24]
+                turns = str(s.get("turn_count") or 1)[:5]
+                created = str(s.get("created_at") or "")[:19]
+                updated = str(s.get("updated_at") or "")[:19]
+                lines.append(f"{sid:<45} | {smod:<24} | {turns:<5} | {created:<19} | {updated:<19}")
+            return "\n".join(lines)
 
 
 class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
@@ -50,8 +165,6 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
                 IO.Boolean.Input("use_cache", default=False, optional=True, tooltip="Enable context caching workflow. Interactions API uses implicit server-side caching and session storage."),
                 IO.Int.Input("cache_ttl_minutes", default=60, min=1, step=1, optional=True, tooltip="Context cache TTL minutes (retained for config compatibility)."),
                 IO.Int.Input("cache_seed", default=0, min=0, max=2147483647, control_after_generate=True, optional=True, tooltip="Gemini generation seed used when context caching is enabled."),
-                IO.Combo.Input("safety_level", options=["block_none", "off", "block_only_high", "block_medium_and_above", "block_low_and_above", "default"], default="block_none", optional=True, tooltip="Default safety filter threshold for all harm categories. 'block_none' allows all content; 'off' completely disables filters."),
-                IO.Combo.Input("safety_method", options=["default", "probability", "severity"], default="default", optional=True, tooltip="Default method for blocking content: probability vs severity score."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -62,8 +175,7 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
     def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool,
                 vertexai_project: str | None = "", vertexai_location: str | None = "",
                 google_application_credentials: str | None = "", use_cache: bool = False,
-                cache_ttl_minutes: int = 60, cache_seed: int = 0,
-                safety_level: str = "block_none", safety_method: str = "default") -> IO.NodeOutput:
+                cache_ttl_minutes: int = 60, cache_seed: int = 0) -> IO.NodeOutput:
         config = {
             "api_key": api_key,
             "api_version": api_version,
@@ -75,74 +187,14 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
             "use_cache": use_cache,
             "cache_ttl_minutes": cache_ttl_minutes,
             "cache_seed": cache_seed,
-            "safety_level": safety_level,
-            "safety_method": safety_method,
         }
         return IO.NodeOutput(config)
-
-
-class SSL_GeminiInteractionsSafetyConfig(IO.ComfyNode):
-    GeminiSafetyConfig = IO.Custom("GEMINI_SAFETY_CONFIG")
-    THRESHOLDS = ["block_none", "off", "block_only_high", "block_medium_and_above", "block_low_and_above", "default"]
-
-    @classmethod
-    def define_schema(cls) -> IO.Schema:
-        return IO.Schema(
-            node_id="SSL_GeminiInteractionsSafetyConfig",
-            display_name="Configure Gemini Interactions Safety",
-            category="API/Gemini/Interactions",
-            inputs=[
-                IO.Combo.Input("harassment", options=cls.THRESHOLDS, default="block_none", tooltip="Negative or harmful comments targeting identity."),
-                IO.Combo.Input("hate_speech", options=cls.THRESHOLDS, default="block_none", tooltip="Content that promotes violence or incites hatred."),
-                IO.Combo.Input("sexually_explicit", options=cls.THRESHOLDS, default="block_none", tooltip="Contains references to sexual acts or other lewd content."),
-                IO.Combo.Input("dangerous_content", options=cls.THRESHOLDS, default="block_none", tooltip="Promotes, facilitates, or encourages harmful acts."),
-                IO.Combo.Input("civic_integrity", options=cls.THRESHOLDS, default="block_none", tooltip="Content that may mislead or influence elections."),
-                IO.Combo.Input("image_harassment", options=cls.THRESHOLDS, default="block_none", tooltip="Images depicting harassment."),
-                IO.Combo.Input("image_hate", options=cls.THRESHOLDS, default="block_none", tooltip="Images depicting hate speech."),
-                IO.Combo.Input("image_sexually_explicit", options=cls.THRESHOLDS, default="block_none", tooltip="Images containing sexually explicit content."),
-                IO.Combo.Input("image_dangerous_content", options=cls.THRESHOLDS, default="block_none", tooltip="Images depicting dangerous content."),
-                IO.Combo.Input("jailbreak", options=cls.THRESHOLDS, default="block_none", tooltip="Prompts designed to bypass safety filters."),
-                IO.Combo.Input("method", options=["default", "probability", "severity"], default="default", tooltip="Method for blocking content: probability vs severity score."),
-            ],
-            outputs=[
-                cls.GeminiSafetyConfig.Output("safety_config")
-            ]
-        )
-
-    @classmethod
-    def execute(cls, harassment: str = "block_none", hate_speech: str = "block_none",
-                sexually_explicit: str = "block_none", dangerous_content: str = "block_none",
-                civic_integrity: str = "block_none", image_harassment: str = "block_none",
-                image_hate: str = "block_none", image_sexually_explicit: str = "block_none",
-                image_dangerous_content: str = "block_none", jailbreak: str = "block_none",
-                method: str = "default") -> IO.NodeOutput:
-        categories = {
-            "harassment": harassment,
-            "hate_speech": hate_speech,
-            "sexually_explicit": sexually_explicit,
-            "dangerous_content": dangerous_content,
-            "civic_integrity": civic_integrity,
-            "image_harassment": image_harassment,
-            "image_hate": image_hate,
-            "image_sexually_explicit": image_sexually_explicit,
-            "image_dangerous_content": image_dangerous_content,
-            "jailbreak": jailbreak,
-        }
-        settings = []
-        for cat, threshold in categories.items():
-            if threshold != "default":
-                entry: dict[str, Any] = {"type": cat, "threshold": threshold}
-                if method != "default":
-                    entry["method"] = method
-                settings.append(entry)
-        return IO.NodeOutput(settings)
 
 
 class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
     ResponseSchema = IO.Custom("GEMINI_RESPONSE_SCHEMA")
     GeminiVideoConfig = IO.Custom("GEMINI_VIDEO_CONFIG")
-    GeminiSafetyConfig = IO.Custom("GEMINI_SAFETY_CONFIG")
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint) -> successful_gemini_seed
     _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
@@ -228,11 +280,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
                 IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", optional=True, tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
-                IO.Boolean.Input("store", default=True, optional=True, tooltip="Store interaction on server for multi-turn conversations."),
-                IO.String.Input("previous_interaction_id", default="", optional=True, multiline=False, tooltip="Optional ID of previous interaction to continue multi-turn conversation."),
-                IO.Combo.Input("safety_level", options=["block_none", "off", "block_only_high", "block_medium_and_above", "block_low_and_above", "default"], default="block_none", optional=True, tooltip="Global safety filter threshold for all 10 text, image, and jailbreak harm categories. 'block_none' allows all content; 'off' completely disables filters."),
-                IO.Combo.Input("safety_method", options=["default", "probability", "severity"], default="default", optional=True, tooltip="Method for blocking content: probability vs severity score."),
-                cls.GeminiSafetyConfig.Input("safety_config", optional=True, tooltip="Optional granular safety configuration from Configure Gemini Interactions Safety node."),
+                IO.Boolean.Input("store", default=True, optional=True, tooltip="Store interaction on server for multi-turn conversations. When enabled with an empty previous_interaction_id, automatically continues the last active interaction."),
+                IO.String.Input("previous_interaction_id", default="", optional=True, multiline=False, tooltip="Optional ID of previous interaction to continue multi-turn conversation. If left empty when store is enabled, automatically uses the last active interaction ID."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
                 cls.ResponseSchema.Input("response_schema", display_name="Response format", optional=True,
                                          tooltip="Connect an answer format to request the fields you defined. Leave disconnected for a normal answer."),
@@ -431,29 +480,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             )
         return thinking_level
 
-    @classmethod
-    def _resolve_safety_settings(cls, safety_config, safety_level, safety_method, config):
-        if safety_config is not None and isinstance(safety_config, list) and safety_config:
-            return list(safety_config)
-
-        eff_level = safety_level
-        if eff_level in (None, "default"):
-            eff_level = config.get("safety_level", "block_none")
-
-        eff_method = safety_method
-        if eff_method in (None, "default"):
-            eff_method = config.get("safety_method", "default")
-
-        if eff_level == "default":
-            return None
-
-        settings = []
-        for cat in cls.ALL_HARM_CATEGORIES:
-            entry: dict[str, Any] = {"type": cat, "threshold": eff_level}
-            if eff_method != "default":
-                entry["method"] = eff_method
-            settings.append(entry)
-        return settings
+    DEFAULT_SAFETY_SETTINGS = tuple(
+        {"type": cat, "threshold": "block_none"} for cat in ALL_HARM_CATEGORIES
+    )
 
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, max_output_tokens,
@@ -464,7 +493,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
                                              cache_ttl_minutes=60, cache_seed=0, image_size="None",
-                                             store=True, previous_interaction_id="", safety_settings=None,
+                                             store=True, previous_interaction_id="",
                                              schema_identity=None):
 
         def get_tensor_hash(tensor):
@@ -539,7 +568,6 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             int(max_retries),
             bool(store),
             str(previous_interaction_id),
-            str(safety_settings),
             schema_identity,
         )
 
@@ -624,8 +652,6 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 include_thoughts=False, thinking_level=None, media_resolution=None,
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
                 image_size="None", store=True, previous_interaction_id="",
-                safety_level="block_none", safety_method="default",
-                safety_config: GeminiSafetyConfig.Type | None = None,
                 video: GeminiVideoConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None,
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
@@ -634,8 +660,6 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         use_cache = bool(config.get("use_cache", False))
         cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
         cache_seed = int(config.get("cache_seed", 0))
-
-        resolved_safety_settings = cls._resolve_safety_settings(safety_config, safety_level, safety_method, config)
 
         schema_identity = None
         schema_snapshot = None
@@ -675,13 +699,19 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             cache_ttl_minutes=cache_ttl_minutes, cache_seed=cache_seed,
             image_size=image_size, store=store,
             previous_interaction_id=previous_interaction_id,
-            safety_settings=resolved_safety_settings,
             schema_identity=schema_identity,
         )
 
         if cached is not None:
             print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
             return IO.NodeOutput(*cached)
+
+        # Resolve effective previous interaction ID from store if not provided directly
+        effective_previous_id = str(previous_interaction_id or "").strip()
+        if store and not effective_previous_id:
+            effective_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
+            if effective_previous_id:
+                print(f"[INFO] Automatically continuing last interaction from store: {effective_previous_id}")
 
         print(f"[INFO] Starting interaction, model: {model}")
 
@@ -933,7 +963,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             start_time = time.time()
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
 
-            def create_interaction_once(current_seed):
+            def create_interaction_once(current_seed, target_previous_id):
                 call_gen_config = dict(generation_config)
                 if use_seed and current_seed is not None:
                     call_gen_config["seed"] = int(current_seed)
@@ -942,8 +972,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     "model": model,
                     "input": input_contents,
                 }
-                if resolved_safety_settings is not None:
-                    kwargs["safety_settings"] = resolved_safety_settings
+                kwargs["safety_settings"] = list(cls.DEFAULT_SAFETY_SETTINGS)
                 if padded_system_instruction:
                     kwargs["system_instruction"] = padded_system_instruction
                 if call_gen_config:
@@ -952,23 +981,36 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     kwargs["response_format"] = response_formats
                 if store is not None:
                     kwargs["store"] = bool(store)
-                if previous_interaction_id and str(previous_interaction_id).strip():
-                    kwargs["previous_interaction_id"] = str(previous_interaction_id).strip()
+                if target_previous_id and str(target_previous_id).strip():
+                    kwargs["previous_interaction_id"] = str(target_previous_id).strip()
 
                 return client.interactions.create(**kwargs)
 
             def api_call():
+                nonlocal effective_previous_id
                 last_api_exception = None
                 api_response = None
                 max_attempts = 1
                 for attempt in range(max_attempts):
                     try:
                         current_seed = (actual_seed + attempt) if (use_seed and actual_seed is not None) else None
-                        response = create_interaction_once(current_seed)
+                        response = create_interaction_once(current_seed, effective_previous_id)
                         api_response = response
                         break
                     except Exception as e:
-                        last_api_exception = e
+                        err_str = str(e).lower()
+                        # If previous interaction was specified/auto-used but expired or not found, fall back to new interaction
+                        if effective_previous_id and ("not found" in err_str or "expired" in err_str or "404" in err_str or "invalid" in err_str):
+                            print(f"[INFO] Previous interaction '{effective_previous_id}' expired/invalid ({e}). Starting fresh interaction.")
+                            effective_previous_id = ""
+                            try:
+                                response = create_interaction_once(current_seed, "")
+                                api_response = response
+                                break
+                            except Exception as retry_err:
+                                last_api_exception = retry_err
+                        else:
+                            last_api_exception = e
                 if api_response is None:
                     result_queue.put(("error", last_api_exception))
                     return
@@ -1153,6 +1195,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             thoughts_output = ""
             interaction_id_output = ""
 
+        # Record interaction in local store on success
+        if is_success and store and interaction_id_output:
+            GeminiInteractionsStoreManager.record_interaction(interaction_id_output, model)
+
         # Cache the result if seed used and successful
         if use_seed and is_success:
             try:
@@ -1165,3 +1211,31 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 print(f"[INFO] Cached successful gemini seed {final_actual_seed} for input seed {input_seed}")
 
         return IO.NodeOutput(text_output, image_tensor, final_actual_seed, structured_output, thoughts_output, interaction_id_output)
+
+
+class SSL_GeminiInteractionsStore(IO.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> IO.Schema:
+        return IO.Schema(
+            node_id="SSL_GeminiInteractionsStore",
+            display_name="Gemini Interactions Store",
+            category="API/Gemini/Interactions",
+            inputs=[
+                IO.Boolean.Input("clear_history", default=False, tooltip="Clear all recorded interactions from local store."),
+                IO.Int.Input("limit", default=10, min=1, max=100, step=1, tooltip="Number of recent sessions to display in table."),
+            ],
+            outputs=[
+                IO.String.Output("session_table", display_name="Session Table"),
+                IO.String.Output("last_interaction_id", display_name="Last Interaction ID"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clear_history: bool = False, limit: int = 10) -> IO.NodeOutput:
+        if clear_history:
+            GeminiInteractionsStoreManager.clear()
+            return IO.NodeOutput("History cleared.", "")
+
+        table = GeminiInteractionsStoreManager.format_session_table(limit=limit)
+        last_id = GeminiInteractionsStoreManager.get_last_interaction_id()
+        return IO.NodeOutput(table, last_id)

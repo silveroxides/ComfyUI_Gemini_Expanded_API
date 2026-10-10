@@ -2,7 +2,7 @@ from comfy_api.latest import ComfyExtension, io
 from .gemini_nodes import GetKeyAPI, SSL_GeminiAPIKeyConfig, SSL_GeminiVideoConfig, SSL_GeminiTextPrompt
 from .interactions_nodes import (
 	SSL_GeminiInteractionsAPIKeyConfig,
-	SSL_GeminiInteractionsSafetyConfig,
+	SSL_GeminiInteractionsStore,
 	SSL_GeminiInteractionsTextPrompt,
 )
 from .response_schema import SSL_GeminiResponseSchema
@@ -22,7 +22,7 @@ class GeminiExtension(ComfyExtension):
 			SSL_GeminiResponseSchema,
 			SSL_GeminiTextPrompt,
 			SSL_GeminiInteractionsAPIKeyConfig,
-			SSL_GeminiInteractionsSafetyConfig,
+			SSL_GeminiInteractionsStore,
 			SSL_GeminiInteractionsTextPrompt,
 		]
 

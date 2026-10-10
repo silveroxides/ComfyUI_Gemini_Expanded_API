@@ -71,6 +71,13 @@ def mock_interactions_client(monkeypatch):
                 captured.on_client()
             self.interactions = FakeInteractions()
 
+    tmp_store = {"last_interaction_id": "", "sessions": []}
+    monkeypatch.setattr(interactions_nodes.GeminiInteractionsStoreManager, "load", lambda: json.loads(json.dumps(tmp_store)))
+    def fake_save(d):
+        tmp_store.clear()
+        tmp_store.update(json.loads(json.dumps(d)))
+    monkeypatch.setattr(interactions_nodes.GeminiInteractionsStoreManager, "save", fake_save)
+
     monkeypatch.setattr(interactions_nodes.genai, "Client", FakeClient)
     yield captured
     for cache in (node._cache, node._client_cache, node._seed_map_cache):
@@ -474,54 +481,74 @@ def test_caching_with_cache_seed_and_usage(mock_interactions_client):
     assert len(mock_interactions_client.calls) == 1
 
 
-def test_safety_config_node():
-    schema = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.define_schema()
-    assert schema.node_id == "SSL_GeminiInteractionsSafetyConfig"
+def test_interactions_store_node():
+    schema = interactions_nodes.SSL_GeminiInteractionsStore.define_schema()
+    assert schema.node_id == "SSL_GeminiInteractionsStore"
     assert schema.category == "API/Gemini/Interactions"
 
-    output = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.execute(
-        harassment="off",
-        hate_speech="block_none",
-        jailbreak="block_only_high",
-        method="severity",
-    )
-    settings = output[0]
-    assert isinstance(settings, list)
-    settings_dict = {s["type"]: s for s in settings}
-    assert settings_dict["harassment"]["threshold"] == "off"
-    assert settings_dict["harassment"]["method"] == "severity"
-    assert settings_dict["hate_speech"]["threshold"] == "block_none"
-    assert settings_dict["jailbreak"]["threshold"] == "block_only_high"
+    # Initially empty
+    out = interactions_nodes.SSL_GeminiInteractionsStore.execute(clear_history=False)
+    assert "No interactions stored" in out[0]
+    assert out[1] == ""
+
+    # Record some sessions
+    interactions_nodes.GeminiInteractionsStoreManager.record_interaction("int_test_1", "gemini-2.5-flash")
+    interactions_nodes.GeminiInteractionsStoreManager.record_interaction("int_test_1", "gemini-2.5-flash")
+    interactions_nodes.GeminiInteractionsStoreManager.record_interaction("int_test_2", "gemini-3.8-flash")
+
+    out2 = interactions_nodes.SSL_GeminiInteractionsStore.execute(clear_history=False, limit=5)
+    table, last_id = out2[0], out2[1]
+    assert "int_test_2" in table
+    assert "gemini-3.8-flash" in table
+    assert last_id == "int_test_2"
+
+    # Test clear_history
+    out3 = interactions_nodes.SSL_GeminiInteractionsStore.execute(clear_history=True)
+    assert out3[0] == "History cleared."
+    assert out3[1] == ""
+    assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == ""
 
 
-def test_safety_preferences_off_and_method(mock_interactions_client):
-    mock_interactions_client.responses = [{"text": "Unrestricted response", "id": "int_safe_1"}]
-    args = _execute_kwargs(safety_level="off", safety_method="severity")
-    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
-
-    assert output[0] == "Unrestricted response"
-    call = mock_interactions_client.calls[0]
-    assert "safety_settings" in call
-    assert len(call["safety_settings"]) == 10
-    assert all(s["threshold"] == "off" for s in call["safety_settings"])
-    assert all(s["method"] == "severity" for s in call["safety_settings"])
-
-
-def test_safety_config_input_override(mock_interactions_client):
-    mock_interactions_client.responses = [{"text": "Granular safety response", "id": "int_safe_2"}]
-    custom_safety = [
-        {"type": "harassment", "threshold": "block_only_high"},
-        {"type": "jailbreak", "threshold": "off"},
+def test_auto_store_and_continue_interaction(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "Turn 1 answer", "id": "int_turn_1"},
+        {"text": "Turn 2 answer", "id": "int_turn_2"},
     ]
-    args = _execute_kwargs(
-        safety_level="block_none",  # Should be overridden by safety_config
-        safety_config=custom_safety,
-    )
+
+    # First turn: store=True, previous_interaction_id="" -> creates new interaction
+    args1 = _execute_kwargs(prompt="First message", store=True, previous_interaction_id="")
+    out1 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args1)
+    assert out1[0] == "Turn 1 answer"
+    assert out1[5] == "int_turn_1"
+    assert "previous_interaction_id" not in mock_interactions_client.calls[0]
+    assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_1"
+
+    # Second turn with DIFFERENT prompt: store=True, previous_interaction_id="" -> auto-continues with int_turn_1
+    args2 = _execute_kwargs(prompt="Second message", store=True, previous_interaction_id="")
+    out2 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args2)
+    assert out2[0] == "Turn 2 answer"
+    assert out2[5] == "int_turn_2"
+    assert mock_interactions_client.calls[1]["previous_interaction_id"] == "int_turn_1"
+    assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_2"
+
+
+def test_expired_interaction_fallback(mock_interactions_client):
+    # First call with expired ID fails with 404/not found, then retry succeeds with new interaction
+    mock_interactions_client.responses = [
+        RuntimeError("404: Interaction not found or expired"),
+        {"text": "Fresh interaction response", "id": "int_fresh_1"},
+    ]
+
+    args = _execute_kwargs(prompt="Continue expired chat", store=True, previous_interaction_id="int_old_expired")
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
-    assert output[0] == "Granular safety response"
-    call = mock_interactions_client.calls[0]
-    assert call["safety_settings"] == custom_safety
+    assert output[0] == "Fresh interaction response"
+    assert output[5] == "int_fresh_1"
+    assert len(mock_interactions_client.calls) == 2
+    # First attempt tried expired ID
+    assert mock_interactions_client.calls[0]["previous_interaction_id"] == "int_old_expired"
+    # Fallback attempt cleared previous_interaction_id
+    assert "previous_interaction_id" not in mock_interactions_client.calls[1]
 
 
 def test_safety_block_error_reporting(mock_interactions_client):
