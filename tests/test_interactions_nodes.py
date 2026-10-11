@@ -289,19 +289,15 @@ def test_structured_output_with_schema(mock_interactions_client):
     ]
 
 
-def test_image_generation(mock_interactions_client):
-    # Create small valid 16x16 PNG image
-    img = Image.new("RGB", (16, 16), color=(255, 0, 0))
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    b64_png = base64.b64encode(buf.getvalue()).decode("utf-8")
+def test_image_generation(mock_interactions_client, monkeypatch):
+    called_with = []
+    fake_img = torch.zeros((1, 16, 16, 3), dtype=torch.float32)
 
-    mock_interactions_client.responses = [{
-        "text": "Generated an image",
-        "image_data": b64_png,
-        "image_mime": "image/png",
-        "id": "int_img_gen_1",
-    }]
+    def fake_generate(**kwargs):
+        called_with.append(kwargs)
+        return interactions_nodes.IO.NodeOutput("Generated an image", fake_img, 0, "", "")
+
+    monkeypatch.setattr(interactions_nodes.SSL_GeminiTextPrompt, "execute", fake_generate)
 
     args = _execute_kwargs(
         model="gemini-3.1-flash-image",
@@ -311,14 +307,16 @@ def test_image_generation(mock_interactions_client):
     )
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
+    assert output[0] == "Generated an image"
     image_tensor = output[1]
     assert torch.is_tensor(image_tensor)
     assert image_tensor.shape == (1, 16, 16, 3)
-
-    call = mock_interactions_client.calls[0]
-    assert call["response_format"] == [
-        {"type": "image", "aspect_ratio": "16:9", "image_size": "1K"}
-    ]
+    assert output[5] == ""  # interaction_id is empty for rerouted image models
+    assert len(called_with) == 1
+    assert called_with[0]["model"] == "gemini-3.1-flash-image"
+    assert called_with[0]["include_images"] is True
+    assert called_with[0]["aspect_ratio"] == "16:9"
+    assert called_with[0]["image_size"] == "1K"
 
 
 def test_thinking_and_thoughts_extraction(mock_interactions_client):

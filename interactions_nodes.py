@@ -28,6 +28,7 @@ from .gemini_nodes import (
     GetKeyAPI,
     SSL_GeminiAPIKeyConfig,
     SSL_GeminiVideoConfig,
+    SSL_GeminiTextPrompt,
 )
 
 
@@ -657,6 +658,49 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiInteractionsTextPrompt execute called, model: {model}")
+
+        # If model is an image generation model, reroute to SSL_GeminiTextPrompt (GenerateContent)
+        if model in cls.IMAGE_MODELS:
+            print(f"[INFO] Model '{model}' is an image generation model; rerouting to GenerateContent engine (SSL_GeminiTextPrompt).")
+            gen_output = SSL_GeminiTextPrompt.execute(
+                config=config,
+                prompt=prompt,
+                system_instruction=system_instruction,
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_output_tokens=max_output_tokens,
+                include_images=include_images,
+                aspect_ratio=aspect_ratio,
+                bypass_mode=bypass_mode,
+                thinking_budget=thinking_budget,
+                use_proxy=use_proxy,
+                proxy_host=proxy_host,
+                proxy_port=proxy_port,
+                use_seed=use_seed,
+                seed=seed,
+                timeout=timeout,
+                include_thoughts=include_thoughts,
+                thinking_level=thinking_level,
+                media_resolution=media_resolution,
+                retry_pattern=retry_pattern,
+                max_retries=max_retries,
+                timeout_fallback_text=timeout_fallback_text,
+                image_size=image_size,
+                video=video,
+                image_inputs=image_inputs,
+                response_schema=response_schema,
+            )
+            return IO.NodeOutput(
+                gen_output[0],  # text
+                gen_output[1],  # image
+                gen_output[2],  # final_actual_seed
+                gen_output[3],  # structured_output
+                gen_output[4],  # thoughts
+                "",             # interaction_id
+            )
+
         use_cache = bool(config.get("use_cache", False))
         cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
         cache_seed = int(config.get("cache_seed", 0))
