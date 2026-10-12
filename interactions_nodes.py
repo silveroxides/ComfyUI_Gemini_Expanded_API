@@ -146,8 +146,66 @@ class GeminiInteractionsStoreManager:
             return "\n".join(lines)
 
 
+class SSL_GeminiInteractionsSafetyConfig(IO.ComfyNode):
+    GeminiSafetyConfig = IO.Custom("GEMINI_SAFETY_CONFIG")
+    THRESHOLDS = ["off", "block_none", "block_only_high", "block_medium_and_above", "block_low_and_above", "default"]
+
+    @classmethod
+    def define_schema(cls) -> IO.Schema:
+        return IO.Schema(
+            node_id="SSL_GeminiInteractionsSafetyConfig",
+            display_name="Configure Gemini Interactions Safety",
+            category="API/Gemini/Interactions",
+            inputs=[
+                IO.Combo.Input("harassment", options=cls.THRESHOLDS, default="off", tooltip="Negative or harmful comments targeting identity."),
+                IO.Combo.Input("hate_speech", options=cls.THRESHOLDS, default="off", tooltip="Content that promotes violence or incites hatred."),
+                IO.Combo.Input("sexually_explicit", options=cls.THRESHOLDS, default="off", tooltip="Contains references to sexual acts or other lewd content."),
+                IO.Combo.Input("dangerous_content", options=cls.THRESHOLDS, default="off", tooltip="Promotes, facilitates, or encourages harmful acts."),
+                IO.Combo.Input("civic_integrity", options=cls.THRESHOLDS, default="off", tooltip="Content that may mislead or influence elections."),
+                IO.Combo.Input("image_harassment", options=cls.THRESHOLDS, default="off", tooltip="Images depicting harassment."),
+                IO.Combo.Input("image_hate", options=cls.THRESHOLDS, default="off", tooltip="Images depicting hate speech."),
+                IO.Combo.Input("image_sexually_explicit", options=cls.THRESHOLDS, default="off", tooltip="Images containing sexually explicit content."),
+                IO.Combo.Input("image_dangerous_content", options=cls.THRESHOLDS, default="off", tooltip="Images depicting dangerous content."),
+                IO.Combo.Input("jailbreak", options=cls.THRESHOLDS, default="default", tooltip="Prompts designed to bypass safety filters. 'default' keeps filter disabled."),
+                IO.Combo.Input("method", options=["default", "severity", "probability"], default="severity", tooltip="Method for blocking content: severity vs probability score."),
+            ],
+            outputs=[
+                cls.GeminiSafetyConfig.Output("safety_config")
+            ]
+        )
+
+    @classmethod
+    def execute(cls, harassment: str = "off", hate_speech: str = "off",
+                sexually_explicit: str = "off", dangerous_content: str = "off",
+                civic_integrity: str = "off", image_harassment: str = "off",
+                image_hate: str = "off", image_sexually_explicit: str = "off",
+                image_dangerous_content: str = "off", jailbreak: str = "default",
+                method: str = "severity") -> IO.NodeOutput:
+        categories = {
+            "harassment": harassment,
+            "hate_speech": hate_speech,
+            "sexually_explicit": sexually_explicit,
+            "dangerous_content": dangerous_content,
+            "civic_integrity": civic_integrity,
+            "image_harassment": image_harassment,
+            "image_hate": image_hate,
+            "image_sexually_explicit": image_sexually_explicit,
+            "image_dangerous_content": image_dangerous_content,
+            "jailbreak": jailbreak,
+        }
+        settings = []
+        for cat, threshold in categories.items():
+            if threshold != "default":
+                entry: dict[str, Any] = {"type": cat, "threshold": threshold}
+                if method != "default":
+                    entry["method"] = method
+                settings.append(entry)
+        return IO.NodeOutput(settings)
+
+
 class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
+    GeminiSafetyConfig = IO.Custom("GEMINI_SAFETY_CONFIG")
 
     @classmethod
     def define_schema(cls) -> IO.Schema:
@@ -166,6 +224,7 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
                 IO.Boolean.Input("use_cache", default=False, optional=True, tooltip="Enable context caching workflow. Interactions API uses implicit server-side caching and session storage."),
                 IO.Int.Input("cache_ttl_minutes", default=60, min=1, step=1, optional=True, tooltip="Context cache TTL minutes (retained for config compatibility)."),
                 IO.Int.Input("cache_seed", default=0, min=0, max=2147483647, control_after_generate=True, optional=True, tooltip="Gemini generation seed used when context caching is enabled."),
+                cls.GeminiSafetyConfig.Input("safety_override", optional=True, tooltip="Optional safety override settings from Configure Gemini Interactions Safety node."),
             ],
             outputs=[
                 cls.GemConfig.Output("config")
@@ -176,7 +235,8 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
     def execute(cls, api_key: str, api_version: str, use_vertexai_env: bool, vertexai_express: bool,
                 vertexai_project: str | None = "", vertexai_location: str | None = "",
                 google_application_credentials: str | None = "", use_cache: bool = False,
-                cache_ttl_minutes: int = 60, cache_seed: int = 0) -> IO.NodeOutput:
+                cache_ttl_minutes: int = 60, cache_seed: int = 0,
+                safety_override: GeminiSafetyConfig.Type | None = None) -> IO.NodeOutput:
         config = {
             "api_key": api_key,
             "api_version": api_version,
@@ -188,6 +248,7 @@ class SSL_GeminiInteractionsAPIKeyConfig(IO.ComfyNode):
             "use_cache": use_cache,
             "cache_ttl_minutes": cache_ttl_minutes,
             "cache_seed": cache_seed,
+            "safety_override": safety_override,
         }
         return IO.NodeOutput(config)
 
@@ -481,9 +542,34 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             )
         return thinking_level
 
-    DEFAULT_SAFETY_SETTINGS = tuple(
-        {"type": cat, "threshold": "block_none"} for cat in ALL_HARM_CATEGORIES
-    )
+    CORE_HARM_CATEGORIES = [
+        "harassment",
+        "hate_speech",
+        "sexually_explicit",
+        "dangerous_content",
+        "civic_integrity",
+        "image_harassment",
+        "image_hate",
+        "image_sexually_explicit",
+        "image_dangerous_content",
+    ]
+
+    @classmethod
+    def _resolve_safety_settings(cls, config: dict[str, Any]):
+        override = config.get("safety_override")
+        if override and isinstance(override, list) and override:
+            return list(override)
+
+        is_enterprise = bool(config.get("use_vertexai_env", False) or config.get("vertexai_express", False))
+        if is_enterprise:
+            return [
+                {"type": cat, "threshold": "off", "method": "severity"}
+                for cat in cls.CORE_HARM_CATEGORIES
+            ]
+        return [
+            {"type": cat, "threshold": "block_none"}
+            for cat in cls.CORE_HARM_CATEGORIES
+        ]
 
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, max_output_tokens,
@@ -494,7 +580,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
                                              cache_ttl_minutes=60, cache_seed=0, image_size="None",
-                                             store=True, previous_interaction_id="",
+                                             store=True, previous_interaction_id="", safety_settings=None,
                                              schema_identity=None):
 
         def get_tensor_hash(tensor):
@@ -569,6 +655,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             int(max_retries),
             bool(store),
             str(previous_interaction_id),
+            str(safety_settings),
             schema_identity,
         )
 
@@ -732,6 +819,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "", "")
 
         video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        resolved_safety_settings = cls._resolve_safety_settings(config)
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, use_seed, seed,
@@ -743,6 +831,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             cache_ttl_minutes=cache_ttl_minutes, cache_seed=cache_seed,
             image_size=image_size, store=store,
             previous_interaction_id=previous_interaction_id,
+            safety_settings=resolved_safety_settings,
             schema_identity=schema_identity,
         )
 
@@ -1016,7 +1105,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     "model": model,
                     "input": input_contents,
                 }
-                kwargs["safety_settings"] = list(cls.DEFAULT_SAFETY_SETTINGS)
+                if resolved_safety_settings is not None:
+                    kwargs["safety_settings"] = list(resolved_safety_settings)
                 if padded_system_instruction:
                     kwargs["system_instruction"] = padded_system_instruction
                 if call_gen_config:

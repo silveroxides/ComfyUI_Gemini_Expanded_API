@@ -191,8 +191,8 @@ def test_basic_text_generation(mock_interactions_client):
     assert call["system_instruction"] == "test system instruction"
     assert call["store"] is True
     assert "safety_settings" in call
-    assert len(call["safety_settings"]) == 10
-    assert {s["type"] for s in call["safety_settings"]} == set(interactions_nodes.SSL_GeminiInteractionsTextPrompt.ALL_HARM_CATEGORIES)
+    assert len(call["safety_settings"]) == 9
+    assert {s["type"] for s in call["safety_settings"]} == set(interactions_nodes.SSL_GeminiInteractionsTextPrompt.CORE_HARM_CATEGORIES)
     assert all(s["threshold"] == "block_none" for s in call["safety_settings"])
 
 
@@ -562,5 +562,81 @@ def test_safety_block_error_reporting(mock_interactions_client):
 
     assert output[0].startswith("API call/processing error:")
     assert "Content was blocked by safety policy" in output[0]
+
+
+def test_safety_config_node_and_override(mock_interactions_client):
+    schema = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.define_schema()
+    assert schema.node_id == "SSL_GeminiInteractionsSafetyConfig"
+    assert schema.category == "API/Gemini/Interactions"
+
+    # Default execution of safety config produces off + severity
+    safety_out = interactions_nodes.SSL_GeminiInteractionsSafetyConfig.execute()
+    custom_safety = safety_out[0]
+    assert isinstance(custom_safety, list)
+    assert len(custom_safety) == 9  # default jailbreak is 'default' so omitted
+    assert all(s["threshold"] == "off" for s in custom_safety)
+    assert all(s["method"] == "severity" for s in custom_safety)
+
+    # Wire to API key config
+    key_config_out = interactions_nodes.SSL_GeminiInteractionsAPIKeyConfig.execute(
+        api_key="test_key",
+        api_version="v1beta",
+        use_vertexai_env=False,
+        vertexai_express=False,
+        safety_override=custom_safety,
+    )
+    config = key_config_out[0]
+    assert config["safety_override"] == custom_safety
+
+    # Execute text prompt with this config
+    mock_interactions_client.responses = [{"text": "Unrestricted custom response", "id": "int_safe_custom"}]
+    args = _execute_kwargs(config=config)
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0] == "Unrestricted custom response"
+    call = mock_interactions_client.calls[0]
+    assert call["safety_settings"] == custom_safety
+
+
+def test_enterprise_auto_safety_resolution(mock_interactions_client):
+    # When vertexai_express or use_vertexai_env is True and no override is given,
+    # auto-resolves to 'off' with 'severity'
+    mock_interactions_client.responses = [{"text": "Enterprise response", "id": "int_ent_1"}]
+    key_config_out = interactions_nodes.SSL_GeminiInteractionsAPIKeyConfig.execute(
+        api_key="test_key",
+        api_version="v1beta",
+        use_vertexai_env=False,
+        vertexai_express=True,
+    )
+    args = _execute_kwargs(config=key_config_out[0])
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0] == "Enterprise response"
+    call = mock_interactions_client.calls[0]
+    assert "safety_settings" in call
+    assert len(call["safety_settings"]) == 9
+    assert all(s["threshold"] == "off" for s in call["safety_settings"])
+    assert all(s["method"] == "severity" for s in call["safety_settings"])
+
+
+def test_standard_auto_safety_resolution(mock_interactions_client):
+    # When using consumer API (non-enterprise) and no override is given,
+    # auto-resolves to 'block_none' without forcing 'off' (which Google AI Studio rejects)
+    mock_interactions_client.responses = [{"text": "Standard response", "id": "int_std_1"}]
+    key_config_out = interactions_nodes.SSL_GeminiInteractionsAPIKeyConfig.execute(
+        api_key="test_key",
+        api_version="v1beta",
+        use_vertexai_env=False,
+        vertexai_express=False,
+    )
+    args = _execute_kwargs(config=key_config_out[0])
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert output[0] == "Standard response"
+    call = mock_interactions_client.calls[0]
+    assert "safety_settings" in call
+    assert len(call["safety_settings"]) == 9
+    assert all(s["threshold"] == "block_none" for s in call["safety_settings"])
+    assert all("method" not in s for s in call["safety_settings"])
 
 
