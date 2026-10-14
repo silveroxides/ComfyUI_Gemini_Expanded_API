@@ -56,6 +56,8 @@ def structured_client(monkeypatch):
     ("gemini-2.5-flash", {}), ("gemini-3.1-pro-preview", {"thinking_level": "high"}),
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_7_FLASH, {"thinking_level": "medium"}),
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_8_FLASH, {"thinking_level": "medium"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON, {"thinking_level": "medium"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON_CYBER_PERMISSIVE, {"thinking_level": "high"}),
 ])
 @pytest.mark.parametrize("client_config", [{}, {"vertexai_express": True}, {"use_vertexai_env": True, "vertexai_project": "test", "vertexai_location": "global"}])
 def test_builder_schema_reaches_generate_content(structured_client, monkeypatch, model, settings, client_config):
@@ -1193,6 +1195,8 @@ def test_confirmed_current_models_are_visible_without_deprecated_image_aliases()
     image_size = next(input_ for input_ in schema.inputs if input_.id == "image_size")
 
     for model in (
+        "gemini-4-argon",
+        "gemini-4-argon-cyber-permissive",
         "gemini-3.7-flash",
         "gemini-3.8-flash",
         "gemini-3.5-flash",
@@ -1388,6 +1392,110 @@ def test_gemini_3_8_rejects_minimal_thinking_level():
         gemini_nodes.SSL_GeminiTextPrompt._resolve_gemini_3_7_thinking_level(
             "minimal", gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_8_FLASH
         )
+
+
+def test_gemini_4_argon_uses_gemini_3_thinking_config():
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-4-argon",
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        max_output_tokens=1024,
+        seed=7,
+        include_images=False,
+        response_modalities=["TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=4096,
+        include_thoughts=True,
+        media_resolution="unspecified",
+    )
+
+    assert config.thinking_config.thinking_level.value == "MEDIUM"
+    assert config.thinking_config.thinking_budget is None
+    assert config.temperature is None
+    assert config.top_p is None
+    assert config.top_k is None
+
+    # Cyber permissive variant defaults to HIGH thinking level
+    config_cyber = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model="gemini-4-argon-cyber-permissive",
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        max_output_tokens=1024,
+        seed=7,
+        include_images=False,
+        response_modalities=["TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level="None",
+        thinking_budget=4096,
+        include_thoughts=True,
+        media_resolution="unspecified",
+    )
+    assert config_cyber.thinking_config.thinking_level.value == "HIGH"
+    assert config_cyber.thinking_config.thinking_budget is None
+    assert config_cyber.temperature is None
+    assert config_cyber.top_p is None
+    assert config_cyber.top_k is None
+
+
+def test_gemini_4_argon_rejects_minimal_thinking_level():
+    with pytest.raises(ValueError, match="gemini-4-argon thinking_level"):
+        gemini_nodes.SSL_GeminiTextPrompt._resolve_gemini_3_7_thinking_level(
+            "minimal", gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON
+        )
+    with pytest.raises(ValueError, match="gemini-4-argon-cyber-permissive thinking_level"):
+        gemini_nodes.SSL_GeminiTextPrompt._resolve_gemini_3_7_thinking_level(
+            "minimal", gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON_CYBER_PERMISSIVE
+        )
+
+
+def test_gemini_4_argon_fingerprint_omits_sampling_params():
+    common = {
+        "config": {"api_key": "key", "api_version": "v1"},
+        "prompt": "prompt",
+        "system_instruction": "system",
+        "model": "gemini-4-argon",
+        "max_output_tokens": 1024,
+        "include_images": False,
+        "aspect_ratio": "None",
+        "bypass_mode": "None",
+        "use_seed": False,
+        "seed": 0,
+        "include_thoughts": True,
+    }
+
+    fp1, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.1,
+        top_p=0.5,
+        top_k=10,
+        thinking_budget=0,
+        thinking_level="medium",
+    )
+    fp2, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.9,
+        top_p=0.99,
+        top_k=90,
+        thinking_budget=1000,
+        thinking_level="medium",
+    )
+    assert fp1 == fp2
+
+
+def test_gemini_4_argon_skips_explicit_context_cache(structured_client):
+    structured_client.responses = [[("final", "argon response")]]
+    args = _execute_kwargs(_config(use_cache=True, cache_seed=42))
+    args["model"] = "gemini-4-argon"
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+    assert output[0] == "argon response"
+    assert len(structured_client.calls) == 1
+    # Explicit cache was not set on the request config
+    assert structured_client.calls[0]["config"].cached_content is None
 
 
 def test_gemini_3_7_fingerprint_matches_effective_request_controls():

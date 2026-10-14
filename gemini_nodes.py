@@ -184,6 +184,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     _context_cache_lock = threading.Lock()
     GEMINI_3_7_FLASH = "gemini-3.7-flash"
     GEMINI_3_8_FLASH = "gemini-3.8-flash"
+    GEMINI_4_ARGON = "gemini-4-argon"
+    GEMINI_4_ARGON_CYBER_PERMISSIVE = "gemini-4-argon-cyber-permissive"
+    ARGON_MODELS = (GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE)
     VIDEO_MIME_TYPE = "video/mp4"
     VIDEO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
     VERTEX_CACHE_INLINE_LIMIT_BYTES = 10 * 1024 * 1024
@@ -197,11 +200,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     THINKING_MODELS = [
         "gemini-1.5-pro-002", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25",
-        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
     "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_FLASH_PREVIEW
+    "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_FLASH_PREVIEW
     ]
     IMAGE_MODELS = [
         "gemini-2.5-flash-image",
@@ -234,7 +237,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1),
@@ -438,11 +441,13 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     @classmethod
     def _resolve_gemini_3_7_thinking_level(cls, thinking_level, model_name=None):
         if thinking_level is None or thinking_level == "None":
+            if model_name == cls.GEMINI_4_ARGON_CYBER_PERMISSIVE:
+                return "high"
             return "medium"
         if thinking_level == "minimal":
-            if model_name == cls.GEMINI_3_8_FLASH:
+            if model_name in (cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
                 raise ValueError(
-                    "gemini-3.8-flash thinking_level must be low, medium, or high."
+                    f"{model_name} thinking_level must be low, medium, or high."
                 )
             print(
                 f"[WARNING] {model_name or 'Gemini 3.7 Flash'} does not support minimal "
@@ -488,9 +493,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         eff_thinking_level = "None"
         eff_thinking_budget = -1
         eff_include_thoughts = False
-        eff_temperature = None if model == cls.GEMINI_3_7_FLASH else float(temperature)
-        eff_top_p = None if model == cls.GEMINI_3_7_FLASH else float(top_p)
-        eff_top_k = None if model == cls.GEMINI_3_7_FLASH else int(top_k)
+        eff_temperature = None if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE) else float(temperature)
+        eff_top_p = None if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE) else float(top_p)
+        eff_top_k = None if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE) else int(top_k)
 
         # Logic mirroring _build_generate_content_config exactly
         if include_images and model in cls.IMAGE_MODELS:
@@ -499,7 +504,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             eff_image_size = "None" if image_size in (None, "None") else str(image_size)
             # When generating images, thinking params are ignored
 
-        elif model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH):
+        elif model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
             eff_thinking_level = cls._resolve_gemini_3_7_thinking_level(thinking_level, model)
             eff_include_thoughts = include_thoughts
 
@@ -750,7 +755,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 system_instruction=[types.Part.from_text(text=padded_system_instruction)],
             )
 
-        if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH):
+        if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
             return types.GenerateContentConfig(
                 max_output_tokens=max_output_tokens,
                 safety_settings=safety,
@@ -1097,13 +1102,19 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             )
 
             skip_context_cache = (
-                use_cache
-                and video_bytes is not None
-                and (config.get("use_vertexai_env", False) or config.get("vertexai_express", False))
-                and context_inline_bytes > cls.VERTEX_CACHE_INLINE_LIMIT_BYTES
+                (
+                    use_cache
+                    and video_bytes is not None
+                    and (config.get("use_vertexai_env", False) or config.get("vertexai_express", False))
+                    and context_inline_bytes > cls.VERTEX_CACHE_INLINE_LIMIT_BYTES
+                )
+                or (use_cache and model in cls.ARGON_MODELS)
             )
             if skip_context_cache:
-                print("[WARNING] Vertex context cache skipped because inline cached media exceeds 10 MB; using full request")
+                if use_cache and model in cls.ARGON_MODELS:
+                    print(f"[WARNING] Explicit context cache skipped for {model} (implicit caching only); using full request")
+                else:
+                    print("[WARNING] Vertex context cache skipped because inline cached media exceeds 10 MB; using full request")
 
             generate_content_config = cls._build_generate_content_config(
                 model=model,

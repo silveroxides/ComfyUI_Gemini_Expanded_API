@@ -155,6 +155,10 @@ def test_interactions_define_schema():
     assert "response_schema" in input_names
     assert "image_inputs" in input_names
 
+    model_input = next(i for i in schema.inputs if i.id == "model")
+    assert "gemini-4-argon" in model_input.options
+    assert "gemini-4-argon-cyber-permissive" in model_input.options
+
     output_names = [o.id for o in schema.outputs]
     assert output_names == ["text", "image", "final_actual_seed", "structured_output", "thoughts", "interaction_id"]
 
@@ -339,6 +343,47 @@ def test_thinking_and_thoughts_extraction(mock_interactions_client):
     call = mock_interactions_client.calls[0]
     assert call["generation_config"]["thinking_level"] == "high"
     assert call["generation_config"]["thinking_summaries"] == "auto"
+
+
+def test_interactions_gemini_4_argon_thinking(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "argon 1", "thoughts": "think 1", "id": "int_argon_1"},
+        {"text": "argon 2", "thoughts": "think 2", "id": "int_argon_2"},
+    ]
+
+    # gemini-4-argon defaults to medium thinking level
+    args1 = _execute_kwargs(
+        model="gemini-4-argon",
+        thinking_level="None",
+        include_thoughts=True,
+    )
+    interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args1)
+    call1 = mock_interactions_client.calls[0]
+    assert call1["model"] == "gemini-4-argon"
+    assert call1["generation_config"]["thinking_level"] == "medium"
+    assert call1["generation_config"]["thinking_summaries"] == "auto"
+
+    # gemini-4-argon-cyber-permissive defaults to high thinking level
+    args2 = _execute_kwargs(
+        model="gemini-4-argon-cyber-permissive",
+        thinking_level="None",
+        include_thoughts=True,
+    )
+    interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args2)
+    call2 = mock_interactions_client.calls[1]
+    assert call2["model"] == "gemini-4-argon-cyber-permissive"
+    assert call2["generation_config"]["thinking_level"] == "high"
+
+
+def test_interactions_gemini_4_argon_rejects_minimal():
+    with pytest.raises(ValueError, match="gemini-4-argon thinking_level"):
+        interactions_nodes.SSL_GeminiInteractionsTextPrompt._resolve_gemini_3_7_thinking_level(
+            "minimal", interactions_nodes.SSL_GeminiInteractionsTextPrompt.GEMINI_4_ARGON
+        )
+    with pytest.raises(ValueError, match="gemini-4-argon-cyber-permissive thinking_level"):
+        interactions_nodes.SSL_GeminiInteractionsTextPrompt._resolve_gemini_3_7_thinking_level(
+            "minimal", interactions_nodes.SSL_GeminiInteractionsTextPrompt.GEMINI_4_ARGON_CYBER_PERMISSIVE
+        )
 
 
 def test_multi_turn_chaining(mock_interactions_client):
