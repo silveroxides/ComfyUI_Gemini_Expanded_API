@@ -685,3 +685,47 @@ def test_standard_auto_safety_resolution(mock_interactions_client):
     assert all("method" not in s for s in call["safety_settings"])
 
 
+def test_interactions_batch_prompts(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "Answer 1", "id": "int_b1"},
+        {"text": "Answer 2", "id": "int_b2"},
+    ]
+    args = _execute_kwargs(prompt=["Prompt A", "Prompt B"])
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list)
+    assert output[0] == ["Answer 1", "Answer 2"]
+    assert isinstance(output[5], list)
+    assert output[5] == ["int_b1", "int_b2"]
+    assert len(mock_interactions_client.calls) == 2
+
+
+def test_interactions_batch_seeds(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "A1", "id": "i1"},
+        {"text": "A2", "id": "i2"},
+    ]
+    args = _execute_kwargs(prompt="Single", use_seed=True, seed=[501, 502])
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list) and len(output[0]) == 2
+    assert output[2] == [501, 502]
+    assert len(mock_interactions_client.calls) == 2
+
+
+def test_interactions_batch_videos(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "VidResp 1", "id": "iv1"},
+        {"text": "VidResp 2", "id": "iv2"},
+    ]
+    args = _execute_kwargs(
+        prompt="Describe video",
+        video=[{"video": None, "fps": 1}, {"video": None, "fps": 1}],
+    )
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list)
+    assert output[0] == ["VidResp 1", "VidResp 2"]
+    assert len(mock_interactions_client.calls) == 2
+
+

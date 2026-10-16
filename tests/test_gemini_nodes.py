@@ -1695,3 +1695,64 @@ def test_gemini_standard_auto_safety_resolution(structured_client):
     assert len(sent_safety) == 9
     assert all("BLOCK_NONE" in str(s.threshold) for s in sent_safety)
     assert all(s.method is None for s in sent_safety)
+
+
+def test_gemini_batch_prompts(structured_client):
+    structured_client.responses = [
+        [("final", "Response 1")],
+        [("final", "Response 2")],
+        [("final", "Response 3")],
+    ]
+    args = _execute_kwargs(_config())
+    args["prompt"] = ["Prompt one", "Prompt two", "Prompt three"]
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list)
+    assert output[0] == ["Response 1", "Response 2", "Response 3"]
+    assert isinstance(output[1], list) and len(output[1]) == 3
+    assert isinstance(output[2], list) and len(output[2]) == 3
+    assert len(structured_client.calls) == 3
+
+
+def test_gemini_batch_seeds(structured_client):
+    structured_client.responses = [
+        [("final", "Resp 1")],
+        [("final", "Resp 2")],
+    ]
+    args = _execute_kwargs(_config())
+    args.update(prompt="Single prompt", use_seed=True, seed=[101, 102])
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list) and len(output[0]) == 2
+    assert output[2] == [101, 102]
+    assert len(structured_client.calls) == 2
+
+
+def test_gemini_batch_single_list_element(structured_client):
+    structured_client.responses = [
+        [("final", "Only response")],
+    ]
+    args = _execute_kwargs(_config())
+    args["prompt"] = ["Only one prompt"]
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list)
+    assert output[0] == ["Only response"]
+    assert len(structured_client.calls) == 1
+
+
+def test_gemini_batch_videos(structured_client):
+    structured_client.responses = [
+        [("final", "Vid 1")],
+        [("final", "Vid 2")],
+    ]
+    args = _execute_kwargs(_config())
+    args.update(
+        prompt="Describe video",
+        video=[{"video": None, "fps": 1}, {"video": None, "fps": 1}],
+    )
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    assert isinstance(output[0], list)
+    assert output[0] == ["Vid 1", "Vid 2"]
+    assert len(structured_client.calls) == 2

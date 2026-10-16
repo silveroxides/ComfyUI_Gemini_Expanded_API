@@ -23,6 +23,7 @@ import hashlib
 import warnings
 from typing import Any, Tuple
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 from .gemini_nodes import (
     GetKeyAPI,
@@ -319,6 +320,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             node_id="SSL_GeminiInteractionsTextPrompt",
             display_name="Expanded Gemini Interactions (Text/Image)",
             category="API/Gemini/Interactions",
+            is_input_list=True,
             inputs=[
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
@@ -362,12 +364,12 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 ),
             ],
             outputs=[
-                IO.String.Output("text"),
-                IO.Image.Output("image"),
-                IO.Int.Output("final_actual_seed"),
-                IO.String.Output("structured_output", display_name="Structured output"),
-                IO.String.Output("thoughts", display_name="Thoughts"),
-                IO.String.Output("interaction_id", display_name="Interaction ID"),
+                IO.String.Output("text", is_output_list=True),
+                IO.Image.Output("image", is_output_list=True),
+                IO.Int.Output("final_actual_seed", is_output_list=True),
+                IO.String.Output("structured_output", display_name="Structured output", is_output_list=True),
+                IO.String.Output("thoughts", display_name="Thoughts", is_output_list=True),
+                IO.String.Output("interaction_id", display_name="Interaction ID", is_output_list=True),
             ]
         )
 
@@ -443,6 +445,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         ):
             if image_batch is None:
                 continue
+            if isinstance(image_batch, list):
+                image_batch = image_batch[0] if image_batch else None
+                if image_batch is None:
+                    continue
             if not torch.is_tensor(image_batch) or image_batch.ndim != 4:
                 raise ValueError(
                     f"Gemini {socket_name} must be a BHWC image tensor."
@@ -739,15 +745,15 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         raise ValueError(f"Structured response contains invalid JSON constant: {value}.")
 
     @classmethod
-    def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
-                include_images, aspect_ratio, bypass_mode, thinking_budget,
-                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
-                include_thoughts=False, thinking_level=None, media_resolution=None,
-                retry_pattern="", max_retries=3, timeout_fallback_text="",
-                image_size="None", store=True, previous_interaction_id="",
-                video: GeminiVideoConfig.Type | None = None,
-                image_inputs: IO.Autogrow.Type | None = None,
-                response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
+    def _execute_single(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+                        include_images, aspect_ratio, bypass_mode, thinking_budget,
+                        use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
+                        include_thoughts=False, thinking_level=None, media_resolution=None,
+                        retry_pattern="", max_retries=3, timeout_fallback_text="",
+                        image_size="None", store=True, previous_interaction_id="",
+                        video: GeminiVideoConfig.Type | None = None,
+                        image_inputs: IO.Autogrow.Type | None = None,
+                        response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
 
         print(f"[INFO] SSL_GeminiInteractionsTextPrompt execute called, model: {model}")
 
@@ -1350,6 +1356,165 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 print(f"[INFO] Cached successful gemini seed {final_actual_seed} for input seed {input_seed}")
 
         return IO.NodeOutput(text_output, image_tensor, final_actual_seed, structured_output, thoughts_output, interaction_id_output)
+
+    @classmethod
+    def execute(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
+                include_images, aspect_ratio, bypass_mode, thinking_budget,
+                use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
+                include_thoughts=False, thinking_level=None, media_resolution=None,
+                retry_pattern="", max_retries=3, timeout_fallback_text="",
+                image_size="None", store=True, previous_interaction_id="",
+                video: GeminiVideoConfig.Type | None = None,
+                image_inputs: IO.Autogrow.Type | None = None,
+                response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
+
+        def _is_list_arg(val):
+            return isinstance(val, list) and not isinstance(val, (str, bytes, dict))
+
+        is_prompt_list = _is_list_arg(prompt)
+        is_video_list = _is_list_arg(video)
+        is_seed_list = _is_list_arg(seed)
+
+        is_batch = is_prompt_list or is_video_list or is_seed_list
+
+        if not is_batch:
+            return cls._execute_single(
+                config=config, prompt=prompt, system_instruction=system_instruction, model=model,
+                temperature=temperature, top_p=top_p, top_k=top_k, max_output_tokens=max_output_tokens,
+                include_images=include_images, aspect_ratio=aspect_ratio, bypass_mode=bypass_mode,
+                thinking_budget=thinking_budget, use_proxy=use_proxy, proxy_host=proxy_host,
+                proxy_port=proxy_port, use_seed=use_seed, seed=seed, timeout=timeout,
+                include_thoughts=include_thoughts, thinking_level=thinking_level,
+                media_resolution=media_resolution, retry_pattern=retry_pattern, max_retries=max_retries,
+                timeout_fallback_text=timeout_fallback_text, image_size=image_size, store=store,
+                previous_interaction_id=previous_interaction_id,
+                video=video, image_inputs=image_inputs, response_schema=response_schema,
+            )
+
+        prompt_list = prompt if is_prompt_list else [prompt]
+        video_list = video if is_video_list else [video]
+        seed_list = seed if is_seed_list else [seed]
+
+        batch_count = max(
+            len(prompt_list) if is_prompt_list else 1,
+            len(video_list) if is_video_list else 1,
+            len(seed_list) if is_seed_list else 1,
+        )
+
+        def _unwrap_scalar(val, default=None):
+            while isinstance(val, list) and len(val) > 0 and (isinstance(val[0], list) or not isinstance(val, dict)):
+                val = val[0]
+            if isinstance(val, list) and len(val) == 1:
+                val = val[0]
+            return val if val is not None else default
+
+        def _get_aligned(val, idx, default=None):
+            if isinstance(val, list) and val:
+                return val[min(idx, len(val) - 1)]
+            return val if val is not None else default
+
+        config_val = _unwrap_scalar(config, {})
+        model_val = _unwrap_scalar(model, "gemini-2.5-flash")
+        temp_val = float(_unwrap_scalar(temperature, 1.0))
+        top_p_val = float(_unwrap_scalar(top_p, 0.95))
+        top_k_val = int(_unwrap_scalar(top_k, 40))
+        max_tokens_val = int(_unwrap_scalar(max_output_tokens, 8192))
+        inc_imgs_val = bool(_unwrap_scalar(include_images, False))
+        aspect_val = str(_unwrap_scalar(aspect_ratio, "None"))
+        bypass_val = str(_unwrap_scalar(bypass_mode, "None"))
+        budget_val = int(_unwrap_scalar(thinking_budget, 0))
+        proxy_val = bool(_unwrap_scalar(use_proxy, False))
+        phost_val = str(_unwrap_scalar(proxy_host, "127.0.0.1"))
+        pport_val = int(_unwrap_scalar(proxy_port, 7890))
+        use_seed_val = bool(_unwrap_scalar(use_seed, False))
+        timeout_val = int(_unwrap_scalar(timeout, 30))
+        thoughts_val = bool(_unwrap_scalar(include_thoughts, False))
+        th_level_val = _unwrap_scalar(thinking_level, None)
+        media_res_val = _unwrap_scalar(media_resolution, None)
+        retry_pat_val = str(_unwrap_scalar(retry_pattern, ""))
+        max_retries_val = int(_unwrap_scalar(max_retries, 3))
+        timeout_fb_val = str(_unwrap_scalar(timeout_fallback_text, ""))
+        img_size_val = str(_unwrap_scalar(image_size, "None"))
+        store_val = bool(_unwrap_scalar(store, True))
+        resp_schema_val = _unwrap_scalar(response_schema, None)
+
+        def make_item_kwargs(idx):
+            p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
+            v = video_list[min(idx, len(video_list) - 1)] if video_list else None
+
+            if is_seed_list and len(seed_list) >= batch_count:
+                s = int(seed_list[idx])
+            elif is_seed_list and len(seed_list) == 1:
+                base_s = int(seed_list[0])
+                s = (base_s + idx) if base_s != 0 else 0
+            elif not is_seed_list and seed != 0:
+                s = int(seed) + idx
+            else:
+                s = int(_unwrap_scalar(seed, 0))
+
+            sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
+            prev_id = _get_aligned(previous_interaction_id, idx, "")
+
+            return {
+                "config": config_val,
+                "prompt": p,
+                "system_instruction": sys_inst,
+                "model": model_val,
+                "temperature": temp_val,
+                "top_p": top_p_val,
+                "top_k": top_k_val,
+                "max_output_tokens": max_tokens_val,
+                "include_images": inc_imgs_val,
+                "aspect_ratio": aspect_val,
+                "bypass_mode": bypass_val,
+                "thinking_budget": budget_val,
+                "use_proxy": proxy_val,
+                "proxy_host": phost_val,
+                "proxy_port": pport_val,
+                "use_seed": use_seed_val,
+                "seed": s,
+                "timeout": timeout_val,
+                "include_thoughts": thoughts_val,
+                "thinking_level": th_level_val,
+                "media_resolution": media_res_val,
+                "retry_pattern": retry_pat_val,
+                "max_retries": max_retries_val,
+                "timeout_fallback_text": timeout_fb_val,
+                "image_size": img_size_val,
+                "store": store_val,
+                "previous_interaction_id": prev_id,
+                "video": v,
+                "image_inputs": image_inputs,
+                "response_schema": resp_schema_val,
+            }
+
+        if batch_count == 1:
+            single_res = cls._execute_single(**make_item_kwargs(0))
+            return IO.NodeOutput(
+                [single_res[0]],
+                [single_res[1]],
+                [single_res[2]],
+                [single_res[3]],
+                [single_res[4]],
+                [single_res[5]],
+            )
+
+        max_workers = min(batch_count, 10)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(cls._execute_single, **make_item_kwargs(idx))
+                for idx in range(batch_count)
+            ]
+            batch_results = [f.result() for f in futures]
+
+        return IO.NodeOutput(
+            [r[0] for r in batch_results],
+            [r[1] for r in batch_results],
+            [r[2] for r in batch_results],
+            [r[3] for r in batch_results],
+            [r[4] for r in batch_results],
+            [r[5] for r in batch_results],
+        )
 
 
 class SSL_GeminiInteractionsStore(IO.ComfyNode):
