@@ -824,8 +824,9 @@ def test_vertex_config_socket_ids_remain_stable():
         "use_cache",
         "cache_ttl_minutes",
         "cache_seed",
+        "safety_override",
     ]
-    assert all(input_.optional for input_ in schema.inputs[-3:])
+    assert all(input_.optional for input_ in schema.inputs[-4:])
 
 
 def test_image_inputs_use_clean_autogrow_socket_ids():
@@ -1626,3 +1627,71 @@ def test_timeout_returns_custom_fallback_without_caching(monkeypatch):
     assert output[0] == "configured fallback"
     assert output[3] == output[4] == ""
     assert gemini_nodes.SSL_GeminiTextPrompt._cache == {}
+
+
+def test_gemini_safety_config_node():
+    schema = gemini_nodes.SSL_GeminiSafetyConfig.define_schema()
+    assert schema.node_id == "SSL_GeminiSafetyConfig"
+    assert schema.category == "API/Gemini"
+
+    output = gemini_nodes.SSL_GeminiSafetyConfig.execute()
+    custom_safety = output[0]
+    assert isinstance(custom_safety, list)
+    assert len(custom_safety) == 9  # default jailbreak is 'default' so omitted
+    assert all(s["threshold"] == "off" for s in custom_safety)
+    assert all(s["method"] == "severity" for s in custom_safety)
+
+
+def test_gemini_safety_override_reached_generate_content(structured_client):
+    safety_out = gemini_nodes.SSL_GeminiSafetyConfig.execute(
+        harassment="block_low_and_above",
+        hate_speech="block_medium_and_above",
+        method="probability",
+    )
+    custom_safety = safety_out[0]
+
+    config = _config(
+        api_key="test-key",
+        safety_override=custom_safety,
+    )
+    args = _execute_kwargs(config)
+    gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    call = structured_client.calls[0]
+    sent_safety = call["config"].safety_settings
+    assert sent_safety is not None
+    assert len(sent_safety) == 9
+
+    harass = next(s for s in sent_safety if "HARASSMENT" in str(s.category) and "IMAGE" not in str(s.category))
+    assert "BLOCK_LOW_AND_ABOVE" in str(harass.threshold)
+    assert "PROBABILITY" in str(harass.method)
+
+    hate = next(s for s in sent_safety if "HATE_SPEECH" in str(s.category))
+    assert "BLOCK_MEDIUM_AND_ABOVE" in str(hate.threshold)
+    assert "PROBABILITY" in str(hate.method)
+
+
+def test_gemini_enterprise_auto_safety_resolution(structured_client):
+    config = _config(api_key="test-key", vertexai_express=True)
+    args = _execute_kwargs(config)
+    gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    call = structured_client.calls[0]
+    sent_safety = call["config"].safety_settings
+    assert sent_safety is not None
+    assert len(sent_safety) == 9
+    assert all("OFF" in str(s.threshold) for s in sent_safety)
+    assert all("SEVERITY" in str(s.method) for s in sent_safety)
+
+
+def test_gemini_standard_auto_safety_resolution(structured_client):
+    config = _config(api_key="test-key")
+    args = _execute_kwargs(config)
+    gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    call = structured_client.calls[0]
+    sent_safety = call["config"].safety_settings
+    assert sent_safety is not None
+    assert len(sent_safety) == 9
+    assert all("BLOCK_NONE" in str(s.threshold) for s in sent_safety)
+    assert all(s.method is None for s in sent_safety)

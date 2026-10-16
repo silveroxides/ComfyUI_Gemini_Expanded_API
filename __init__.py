@@ -1,5 +1,11 @@
 from comfy_api.latest import ComfyExtension, io
-from .gemini_nodes import GetKeyAPI, SSL_GeminiAPIKeyConfig, SSL_GeminiVideoConfig, SSL_GeminiTextPrompt
+from .gemini_nodes import (
+	GetKeyAPI,
+	SSL_GeminiAPIKeyConfig,
+	SSL_GeminiSafetyConfig,
+	SSL_GeminiVideoConfig,
+	SSL_GeminiTextPrompt,
+)
 from .interactions_nodes import (
 	SSL_GeminiInteractionsAPIKeyConfig,
 	SSL_GeminiInteractionsSafetyConfig,
@@ -19,6 +25,7 @@ class GeminiExtension(ComfyExtension):
 		return [
 			GetKeyAPI,
 			SSL_GeminiAPIKeyConfig,
+			SSL_GeminiSafetyConfig,
 			SSL_GeminiVideoConfig,
 			SSL_GeminiResponseSchema,
 			SSL_GeminiTextPrompt,
