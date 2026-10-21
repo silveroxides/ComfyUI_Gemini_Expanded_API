@@ -8,6 +8,7 @@ import cv2
 from PIL import Image
 from io import BytesIO
 import folder_paths  # type: ignore[reportMissingImports]
+import comfy.model_management  # type: ignore[reportMissingImports]
 from comfy_api.latest import ComfyExtension, UI, IO, Types, VideoFromComponents  # type: ignore[reportMissingImports]
 from google import genai
 from google.genai import errors, types
@@ -21,7 +22,6 @@ import random
 import hashlib
 import warnings
 from typing import Any, Tuple
-from concurrent.futures import ThreadPoolExecutor
 
 class GetKeyAPI(IO.ComfyNode):
     @classmethod
@@ -437,6 +437,46 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return frames, batch_counts
 
     @classmethod
+    def _prepare_image_inputs(cls, image_inputs: IO.Autogrow.Type | None) -> dict[str, Any] | None:
+        if not image_inputs:
+            return None
+        image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
+        if not image_frames:
+            return {
+                "image_hashes": (),
+                "png_bytes_list": [],
+                "png_hashes": [],
+                "batch_counts": [],
+            }
+        tensor_hashes = []
+        png_bytes_list = []
+        png_hashes = []
+        for _, _, image_frame in image_frames:
+            np_frame = np.ascontiguousarray(image_frame.cpu().numpy())
+            tensor_hashes.append(hashlib.sha256(np_frame.tobytes()).hexdigest())
+            img_array = (np_frame * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_array)
+            img_byte_arr = BytesIO()
+            pil_img.save(img_byte_arr, format='PNG')
+            img_bytes = img_byte_arr.getvalue()
+            png_bytes_list.append(img_bytes)
+            png_hashes.append(hashlib.sha256(img_bytes).hexdigest())
+        batch_summary = ", ".join(
+            f"{socket_name}={batch_size}"
+            for socket_name, batch_size in image_batch_counts
+        )
+        print(
+            f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
+            f"total={len(png_bytes_list)}"
+        )
+        return {
+            "image_hashes": tuple(tensor_hashes),
+            "png_bytes_list": png_bytes_list,
+            "png_hashes": png_hashes,
+            "batch_counts": image_batch_counts,
+        }
+
+    @classmethod
     def _serialize_video(cls, video: IO.Video.Type | None, fps: int | None = None,
                          pad_at_start: bool = False, duration_aware_padding: bool = False):
         if video is None:
@@ -591,7 +631,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                              use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, timeout=30,
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
-                                             cache_ttl_minutes=60, cache_seed=0, image_size="None", schema_identity=None):
+                                             cache_ttl_minutes=60, cache_seed=0, image_size="None", schema_identity=None,
+                                             precomputed_image_hashes=None):
 
         # 1. Hashing Images
         def get_tensor_hash(tensor):
@@ -603,8 +644,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[WARNING] Cache hashing failed for image: {e}")
                 return "Error"
 
-        image_frames, _ = cls._ordered_image_frames(image_inputs)
-        image_hashes = tuple(get_tensor_hash(frame) for _, _, frame in image_frames)
+        if precomputed_image_hashes is not None:
+            image_hashes = precomputed_image_hashes
+        else:
+            image_frames, _ = cls._ordered_image_frames(image_inputs)
+            image_hashes = tuple(get_tensor_hash(frame) for _, _, frame in image_frames)
 
         # 2. Determine Effective Parameters based on Model
         # This ensures we don't cache-miss if an irrelevant parameter changes
@@ -931,6 +975,24 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         raise ValueError(f"Structured response contains invalid JSON constant: {value}.")
 
     @classmethod
+    def _check_interrupt(cls):
+        comfy.model_management.throw_exception_if_processing_interrupted()
+
+    @classmethod
+    def _wait_for_result(cls, result_queue: "queue.Queue[Tuple[str, Any]]", timeout: float) -> Tuple[str, Any]:
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            cls._check_interrupt()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty()
+            try:
+                return result_queue.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                if time.monotonic() >= deadline:
+                    raise
+
+    @classmethod
     def _execute_single(cls, config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
                         include_images, aspect_ratio, bypass_mode, thinking_budget,
                         use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
@@ -939,8 +1001,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         image_size="None",
                         video: GeminiVideoConfig.Type | None = None,
                         image_inputs: IO.Autogrow.Type | None = None,
-                        response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
+                        response_schema: ResponseSchema.Type | None = None,
+                        prepared_images: dict[str, Any] | None = None,
+                        precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None) -> IO.NodeOutput:
 
+        cls._check_interrupt()
         print(f"[INFO] SSL_GeminiTextPrompt execute called, model: {model}")
         use_cache = bool(config.get("use_cache", False))
         cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
@@ -954,22 +1019,26 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 raise ValueError("Response format cannot be combined with image generation. Disable include_images.")
             schema_identity = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             schema_snapshot = json.loads(schema_identity)
-        video_input = video.get("video") if video is not None else None
-        video_fps = int(video.get("fps", 1)) if video is not None else None
-        video_pad_at_start = bool(video.get("pad_at_start", False)) if video is not None else False
-        video_duration_aware_padding = bool(video.get("duration_aware_padding", False)) if video is not None else False
-        try:
-            video_bytes, video_mime_type = cls._serialize_video(
-                video_input,
-                video_fps,
-                video_pad_at_start,
-                video_duration_aware_padding,
-            )
-        except Exception as e:
-            print(f"[ERROR] Error processing input video: {e}")
-            output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
-            return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "")
-        video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        if precomputed_video is not None:
+            video_bytes, video_mime_type, video_hash, video_fps = precomputed_video
+        else:
+            video_input = video.get("video") if video is not None else None
+            video_fps = int(video.get("fps", 1)) if video is not None else None
+            video_pad_at_start = bool(video.get("pad_at_start", False)) if video is not None else False
+            video_duration_aware_padding = bool(video.get("duration_aware_padding", False)) if video is not None else False
+            try:
+                video_bytes, video_mime_type = cls._serialize_video(
+                    video_input,
+                    video_fps,
+                    video_pad_at_start,
+                    video_duration_aware_padding,
+                )
+            except Exception as e:
+                print(f"[ERROR] Error processing input video: {e}")
+                output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
+                return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "")
+            video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        precomputed_image_hashes = prepared_images["image_hashes"] if prepared_images is not None else None
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
             include_images, aspect_ratio, bypass_mode, thinking_budget, use_seed, seed,
@@ -980,6 +1049,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             retry_pattern, max_retries, use_cache, cache_ttl_minutes, cache_seed,
             image_size=image_size,
             schema_identity=schema_identity,
+            precomputed_image_hashes=precomputed_image_hashes,
         )
 
         if cached is not None:
@@ -1143,7 +1213,6 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
 
             # Prepare contents (images + video + prompt)
-            image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
             context_image_hashes = []
             media_parts = []
             context_inline_bytes = (
@@ -1152,42 +1221,60 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 + len(padded_system_instruction.encode("utf-8"))
             )
 
-            if image_frames:
-                try:
-                    img_parts = []
-                    for _, _, image_frame in image_frames:
-                        img_array = image_frame.cpu().numpy()
-                        img_array = (img_array * 255).astype(np.uint8)
-                        pil_img = Image.fromarray(img_array)
-                        img_byte_arr = BytesIO()
-                        pil_img.save(img_byte_arr, format='PNG')
-                        img_bytes = img_byte_arr.getvalue()
-                        context_inline_bytes += len(img_bytes)
-                        context_image_hashes.append(hashlib.sha256(img_bytes).hexdigest())
-                        if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
-                            img_part = types.Part.from_bytes(
-                                data=img_bytes,
-                                mime_type="image/png",
-                                media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
-                            )
-                        else:
-                            img_part = types.Part.from_bytes(
-                                data=img_bytes,
-                                mime_type="image/png",
-                            )
-                        img_parts.append(img_part)
-                    batch_summary = ", ".join(
-                        f"{socket_name}={batch_size}"
-                        for socket_name, batch_size in image_batch_counts
-                    )
-                    print(
-                        f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
-                        f"total={len(img_parts)}"
-                    )
-                    media_parts.extend(img_parts)
-                except Exception as e:
-                    print(f"[ERROR] Error processing input image: {str(e)}")
-                    return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
+            if prepared_images is not None:
+                for img_bytes, png_hash in zip(prepared_images["png_bytes_list"], prepared_images["png_hashes"]):
+                    context_inline_bytes += len(img_bytes)
+                    context_image_hashes.append(png_hash)
+                    if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
+                        img_part = types.Part.from_bytes(
+                            data=img_bytes,
+                            mime_type="image/png",
+                            media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
+                        )
+                    else:
+                        img_part = types.Part.from_bytes(
+                            data=img_bytes,
+                            mime_type="image/png",
+                        )
+                    media_parts.append(img_part)
+            else:
+                image_frames, image_batch_counts = cls._ordered_image_frames(image_inputs)
+                if image_frames:
+                    try:
+                        img_parts = []
+                        for _, _, image_frame in image_frames:
+                            img_array = image_frame.cpu().numpy()
+                            img_array = (img_array * 255).astype(np.uint8)
+                            pil_img = Image.fromarray(img_array)
+                            img_byte_arr = BytesIO()
+                            pil_img.save(img_byte_arr, format='PNG')
+                            img_bytes = img_byte_arr.getvalue()
+                            context_inline_bytes += len(img_bytes)
+                            context_image_hashes.append(hashlib.sha256(img_bytes).hexdigest())
+                            if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
+                                img_part = types.Part.from_bytes(
+                                    data=img_bytes,
+                                    mime_type="image/png",
+                                    media_resolution=f"MEDIA_RESOLUTION_{media_resolution.upper()}",
+                                )
+                            else:
+                                img_part = types.Part.from_bytes(
+                                    data=img_bytes,
+                                    mime_type="image/png",
+                                )
+                            img_parts.append(img_part)
+                        batch_summary = ", ".join(
+                            f"{socket_name}={batch_size}"
+                            for socket_name, batch_size in image_batch_counts
+                        )
+                        print(
+                            f"[INFO] Prepared Gemini image inputs: {batch_summary}, "
+                            f"total={len(img_parts)}"
+                        )
+                        media_parts.extend(img_parts)
+                    except Exception as e:
+                        print(f"[ERROR] Error processing input image: {str(e)}")
+                        return IO.NodeOutput(f"Error processing input image: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
 
             if video_bytes is not None:
                 if model in cls.MEDIA_RES_MODELS and media_resolution is not None and media_resolution != "unspecified":
@@ -1401,7 +1488,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 thoughts_output = ""
 
                 try:
-                    status, result = result_queue.get(timeout=timeout)
+                    status, result = cls._wait_for_result(result_queue, timeout)
                     elapsed_time = time.time() - start_time
                     if status == "success":
                         text_output, image_tensor, thoughts_output = result
@@ -1414,6 +1501,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             try:
                                 compiled_pattern = re.compile(retry_pattern, re.IGNORECASE)
                                 if compiled_pattern.search(text_output):
+                                    cls._check_interrupt()
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in response. Retry attempt {retry_attempt}/{max_retries}")
 
@@ -1448,6 +1536,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             try:
                                 compiled_pattern = re.compile(retry_pattern, re.IGNORECASE)
                                 if compiled_pattern.search(text_output):
+                                    cls._check_interrupt()
                                     retry_attempt += 1
                                     print(f"[INFO] Retry pattern matched in error. Retry attempt {retry_attempt}/{max_retries}")
 
@@ -1583,7 +1672,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         img_size_val = str(_unwrap_scalar(image_size, "None"))
         resp_schema_val = _unwrap_scalar(response_schema, None)
 
-        def make_item_kwargs(idx):
+        def make_item_kwargs(idx, prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
 
@@ -1628,6 +1717,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 "video": v,
                 "image_inputs": image_inputs,
                 "response_schema": resp_schema_val,
+                "prepared_images": prepared_imgs,
+                "precomputed_video": precomp_vid,
             }
 
         if batch_count == 1:
@@ -1640,13 +1731,40 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 [single_res[4]],
             )
 
-        max_workers = min(batch_count, 10)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(cls._execute_single, **make_item_kwargs(idx))
-                for idx in range(batch_count)
-            ]
-            batch_results = [f.result() for f in futures]
+        print(f"[INFO] Preparing sequential list execution for {batch_count} items (model: {model_val})")
+        prepared_images = None
+        if image_inputs:
+            try:
+                prepared_images = cls._prepare_image_inputs(image_inputs)
+            except Exception:
+                prepared_images = None
+
+        precomputed_video = None
+        if len(video_list) == 1 and video_list[0] is not None:
+            try:
+                v0 = video_list[0]
+                v_input = v0.get("video")
+                v_fps = int(v0.get("fps", 1))
+                v_pad = bool(v0.get("pad_at_start", False))
+                v_dur = bool(v0.get("duration_aware_padding", False))
+                v_bytes, v_mime = cls._serialize_video(v_input, v_fps, v_pad, v_dur)
+                v_hash = hashlib.sha256(v_bytes).hexdigest() if v_bytes is not None else None
+                precomputed_video = (v_bytes, v_mime, v_hash, v_fps)
+            except Exception:
+                precomputed_video = None
+
+        batch_results = []
+        for idx in range(batch_count):
+            cls._check_interrupt()
+            batch_results.append(
+                cls._execute_single(
+                    **make_item_kwargs(
+                        idx,
+                        prepared_imgs=prepared_images,
+                        precomp_vid=precomputed_video,
+                    )
+                )
+            )
 
         return IO.NodeOutput(
             [r[0] for r in batch_results],

@@ -1697,7 +1697,7 @@ def test_gemini_standard_auto_safety_resolution(structured_client):
     assert all(s.method is None for s in sent_safety)
 
 
-def test_gemini_batch_prompts(structured_client):
+def test_gemini_batch_prompts(structured_client, capsys):
     structured_client.responses = [
         [("final", "Response 1")],
         [("final", "Response 2")],
@@ -1705,6 +1705,7 @@ def test_gemini_batch_prompts(structured_client):
     ]
     args = _execute_kwargs(_config())
     args["prompt"] = ["Prompt one", "Prompt two", "Prompt three"]
+    args["image_inputs"] = {"image_1": torch.full((1, 2, 2, 3), 0.5)}
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
 
     assert isinstance(output[0], list)
@@ -1712,6 +1713,47 @@ def test_gemini_batch_prompts(structured_client):
     assert isinstance(output[1], list) and len(output[1]) == 3
     assert isinstance(output[2], list) and len(output[2]) == 3
     assert len(structured_client.calls) == 3
+    assert len(structured_client.clients) == 1
+    captured_out = capsys.readouterr().out
+    assert captured_out.count("Prepared Gemini image inputs: image_1=1, total=1") == 1
+
+
+def test_gemini_interrupt_aborts_in_flight_call(monkeypatch):
+    import time
+    import comfy.model_management
+
+    started = threading.Event()
+
+    class SlowModels:
+        def generate_content(self, **kwargs):
+            started.set()
+            time.sleep(5.0)
+            return SimpleNamespace(candidates=[])
+
+    class SlowClient:
+        def __init__(self, **kwargs):
+            self.models = SlowModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", SlowClient)
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    comfy.model_management.interrupt_current_processing(False)
+
+    def trigger_interrupt():
+        started.wait(timeout=2.0)
+        time.sleep(0.05)
+        comfy.model_management.interrupt_current_processing(True)
+
+    interrupter = threading.Thread(target=trigger_interrupt, daemon=True)
+    interrupter.start()
+
+    args = _execute_kwargs(_config())
+    args["timeout"] = 120
+    t0 = time.monotonic()
+    with pytest.raises(comfy.model_management.InterruptProcessingException):
+        gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    comfy.model_management.interrupt_current_processing(False)
 
 
 def test_gemini_batch_seeds(structured_client):

@@ -524,7 +524,7 @@ def test_caching_with_cache_seed_and_usage(mock_interactions_client):
     assert len(mock_interactions_client.calls) == 1
 
 
-def test_interactions_store_node():
+def test_interactions_store_node(mock_interactions_client):
     schema = interactions_nodes.SSL_GeminiInteractionsStore.define_schema()
     assert schema.node_id == "SSL_GeminiInteractionsStore"
     assert schema.category == "API/Gemini/Interactions"
@@ -685,19 +685,69 @@ def test_standard_auto_safety_resolution(mock_interactions_client):
     assert all("method" not in s for s in call["safety_settings"])
 
 
-def test_interactions_batch_prompts(mock_interactions_client):
+def test_interactions_batch_prompts(mock_interactions_client, capsys):
     mock_interactions_client.responses = [
         {"text": "Answer 1", "id": "int_b1"},
         {"text": "Answer 2", "id": "int_b2"},
+        {"text": "Answer 3", "id": "int_b3"},
     ]
-    args = _execute_kwargs(prompt=["Prompt A", "Prompt B"])
+    args = _execute_kwargs(
+        prompt=["Prompt A", "Prompt B", "Prompt C"],
+        store=True,
+        previous_interaction_id="",
+        image_inputs={"image_1": torch.full((1, 2, 2, 3), 0.5)},
+    )
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
     assert isinstance(output[0], list)
-    assert output[0] == ["Answer 1", "Answer 2"]
+    assert output[0] == ["Answer 1", "Answer 2", "Answer 3"]
     assert isinstance(output[5], list)
-    assert output[5] == ["int_b1", "int_b2"]
-    assert len(mock_interactions_client.calls) == 2
+    assert output[5] == ["int_b1", "int_b2", "int_b3"]
+    assert len(mock_interactions_client.calls) == 3
+    assert len(mock_interactions_client.clients) == 1
+    assert "previous_interaction_id" not in mock_interactions_client.calls[0]
+    assert mock_interactions_client.calls[1]["previous_interaction_id"] == "int_b1"
+    assert mock_interactions_client.calls[2]["previous_interaction_id"] == "int_b2"
+    captured_out = capsys.readouterr().out
+    assert captured_out.count("Prepared Gemini image inputs: image_1=1, total=1") == 1
+
+
+def test_interactions_interrupt_aborts_in_flight_call(mock_interactions_client, monkeypatch):
+    import time
+    import comfy.model_management
+
+    started = threading.Event()
+
+    class SlowInteractions:
+        def create(self, **kwargs):
+            started.set()
+            time.sleep(5.0)
+            return SimpleNamespace(id="slow", output_text="slow")
+
+    class SlowClient:
+        def __init__(self, **kwargs):
+            self.interactions = SlowInteractions()
+
+    monkeypatch.setattr(interactions_nodes.genai, "Client", SlowClient)
+    interactions_nodes.SSL_GeminiInteractionsTextPrompt._client_cache.clear()
+    comfy.model_management.interrupt_current_processing(False)
+
+    def trigger_interrupt():
+        started.wait(timeout=2.0)
+        time.sleep(0.05)
+        comfy.model_management.interrupt_current_processing(True)
+
+    interrupter = threading.Thread(target=trigger_interrupt, daemon=True)
+    interrupter.start()
+
+    t0 = time.monotonic()
+    with pytest.raises(comfy.model_management.InterruptProcessingException):
+        interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(
+            **_execute_kwargs(timeout=120)
+        )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    comfy.model_management.interrupt_current_processing(False)
 
 
 def test_interactions_batch_seeds(mock_interactions_client):
