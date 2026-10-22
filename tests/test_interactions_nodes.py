@@ -125,7 +125,7 @@ def _execute_kwargs(config=None, **overrides):
         "max_retries": 3,
         "timeout_fallback_text": "",
         "image_size": "None",
-        "store": True,
+        "store": "new",
         "previous_interaction_id": "",
         "video": None,
         "image_inputs": None,
@@ -158,6 +158,10 @@ def test_interactions_define_schema():
     model_input = next(i for i in schema.inputs if i.id == "model")
     assert "gemini-4-argon" in model_input.options
     assert "gemini-4-argon-cyber-permissive" in model_input.options
+
+    store_input = next(i for i in schema.inputs if i.id == "store")
+    assert store_input.options == ["new", "previous", "manual", "disabled"]
+    assert store_input.default == "new"
 
     output_names = [o.id for o in schema.outputs]
     assert output_names == ["text", "image", "final_actual_seed", "structured_output", "thoughts", "interaction_id"]
@@ -393,14 +397,14 @@ def test_multi_turn_chaining(mock_interactions_client):
     ]
 
     # First turn
-    args1 = _execute_kwargs(prompt="First message", store=True)
+    args1 = _execute_kwargs(prompt="First message", store="new")
     out1 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args1)
     id1 = out1[5]
     assert id1 == "int_turn_1"
     assert mock_interactions_client.calls[0].get("previous_interaction_id") is None
 
-    # Second turn continuing first
-    args2 = _execute_kwargs(prompt="Follow-up message", previous_interaction_id=id1, store=True)
+    # Second turn continuing first via manual ID
+    args2 = _execute_kwargs(prompt="Follow-up message", previous_interaction_id=id1, store="manual")
     out2 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args2)
     assert out2[0] == "Turn 2 answer"
     assert out2[5] == "int_turn_2"
@@ -556,23 +560,42 @@ def test_auto_store_and_continue_interaction(mock_interactions_client):
     mock_interactions_client.responses = [
         {"text": "Turn 1 answer", "id": "int_turn_1"},
         {"text": "Turn 2 answer", "id": "int_turn_2"},
+        {"text": "Turn 3 fresh", "id": "int_turn_3"},
+        {"text": "Turn 4 disabled", "id": "int_turn_4"},
     ]
 
-    # First turn: store=True, previous_interaction_id="" -> creates new interaction
-    args1 = _execute_kwargs(prompt="First message", store=True, previous_interaction_id="")
+    # First turn: store="new" -> creates new interaction and stores it
+    args1 = _execute_kwargs(prompt="First message", store="new", previous_interaction_id="")
     out1 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args1)
     assert out1[0] == "Turn 1 answer"
     assert out1[5] == "int_turn_1"
     assert "previous_interaction_id" not in mock_interactions_client.calls[0]
+    assert mock_interactions_client.calls[0]["store"] is True
     assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_1"
 
-    # Second turn with DIFFERENT prompt: store=True, previous_interaction_id="" -> auto-continues with int_turn_1
-    args2 = _execute_kwargs(prompt="Second message", store=True, previous_interaction_id="")
+    # Second turn: store="previous" -> auto-continues with int_turn_1 from store
+    args2 = _execute_kwargs(prompt="Second message", store="previous", previous_interaction_id="")
     out2 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args2)
     assert out2[0] == "Turn 2 answer"
     assert out2[5] == "int_turn_2"
     assert mock_interactions_client.calls[1]["previous_interaction_id"] == "int_turn_1"
     assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_2"
+
+    # Third turn: store="new" -> starts fresh interaction even though store has int_turn_2
+    args3 = _execute_kwargs(prompt="Third message", store="new", previous_interaction_id="ignored_id")
+    out3 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args3)
+    assert out3[0] == "Turn 3 fresh"
+    assert out3[5] == "int_turn_3"
+    assert "previous_interaction_id" not in mock_interactions_client.calls[2]
+    assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_3"
+
+    # Fourth turn: store="disabled" -> does not continue and sets store=False
+    args4 = _execute_kwargs(prompt="Fourth message", store="disabled", previous_interaction_id="ignored_id")
+    out4 = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args4)
+    assert out4[0] == "Turn 4 disabled"
+    assert "previous_interaction_id" not in mock_interactions_client.calls[3]
+    assert mock_interactions_client.calls[3]["store"] is False
+    assert interactions_nodes.GeminiInteractionsStoreManager.get_last_interaction_id() == "int_turn_3"
 
 
 def test_expired_interaction_fallback(mock_interactions_client):
@@ -582,7 +605,7 @@ def test_expired_interaction_fallback(mock_interactions_client):
         {"text": "Fresh interaction response", "id": "int_fresh_1"},
     ]
 
-    args = _execute_kwargs(prompt="Continue expired chat", store=True, previous_interaction_id="int_old_expired")
+    args = _execute_kwargs(prompt="Continue expired chat", store="manual", previous_interaction_id="int_old_expired")
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
     assert output[0] == "Fresh interaction response"
@@ -693,7 +716,7 @@ def test_interactions_batch_prompts(mock_interactions_client, capsys):
     ]
     args = _execute_kwargs(
         prompt=["Prompt A", "Prompt B", "Prompt C"],
-        store=True,
+        store="new",
         previous_interaction_id="",
         image_inputs={"image_1": torch.full((1, 2, 2, 3), 0.5)},
     )

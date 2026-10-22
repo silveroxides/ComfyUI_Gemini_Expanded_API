@@ -347,8 +347,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
                 IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", optional=True, tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
-                IO.Boolean.Input("store", default=True, optional=True, tooltip="Store interaction on server for multi-turn conversations. When enabled with an empty previous_interaction_id, automatically continues the last active interaction."),
-                IO.String.Input("previous_interaction_id", default="", optional=True, multiline=False, tooltip="Optional ID of previous interaction to continue multi-turn conversation. If left empty when store is enabled, automatically uses the last active interaction ID."),
+                IO.Combo.Input("store", options=["new", "previous", "manual", "disabled"], default="new", optional=True, tooltip="Session mode: 'new' starts a fresh interaction and stores it; 'previous' continues the last stored interaction; 'manual' continues from previous_interaction_id; 'disabled' does not store or continue."),
+                IO.String.Input("previous_interaction_id", default="", optional=True, multiline=False, tooltip="ID of previous interaction to continue when store is set to 'manual'."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
                 cls.ResponseSchema.Input("response_schema", display_name="Response format", optional=True,
                                          tooltip="Connect an answer format to request the fields you defined. Leave disconnected for a normal answer."),
@@ -617,6 +617,17 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             for cat in cls.CORE_HARM_CATEGORIES
         ]
 
+    STORE_MODES = ("new", "previous", "manual", "disabled")
+
+    @classmethod
+    def _normalize_store_mode(cls, store: Any) -> str:
+        if store is None:
+            return "new"
+        mode = str(store).strip().lower()
+        if mode not in cls.STORE_MODES:
+            raise ValueError(f"store must be one of: {', '.join(cls.STORE_MODES)}.")
+        return mode
+
     @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, max_output_tokens,
                                              include_images, aspect_ratio, bypass_mode, use_seed, seed,
@@ -626,7 +637,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
                                              cache_ttl_minutes=60, cache_seed=0, image_size="None",
-                                             store=True, previous_interaction_id="", safety_settings=None,
+                                             store="new", previous_interaction_id="", safety_settings=None,
                                              schema_identity=None, precomputed_image_hashes=None):
 
         def get_tensor_hash(tensor):
@@ -702,7 +713,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             str(media_resolution),
             str(retry_pattern),
             int(max_retries),
-            bool(store),
+            str(store),
             str(previous_interaction_id),
             str(safety_settings),
             schema_identity,
@@ -806,12 +817,13 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                         use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                         include_thoughts=False, thinking_level=None, media_resolution=None,
                         retry_pattern="", max_retries=3, timeout_fallback_text="",
-                        image_size="None", store=True, previous_interaction_id="",
+                        image_size="None", store="new", previous_interaction_id="",
                         video: GeminiVideoConfig.Type | None = None,
                         image_inputs: IO.Autogrow.Type | None = None,
                         response_schema: ResponseSchema.Type | None = None,
                         prepared_images: dict[str, Any] | None = None,
-                        precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None) -> IO.NodeOutput:
+                        precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None,
+                        chained_previous_id: str = "") -> IO.NodeOutput:
 
         cls._check_interrupt()
         print(f"[INFO] SSL_GeminiInteractionsTextPrompt execute called, model: {model}")
@@ -892,6 +904,21 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "", "")
 
             video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        store_mode = cls._normalize_store_mode(store)
+        store_enabled = store_mode != "disabled"
+        if store_mode == "new":
+            effective_previous_id = str(chained_previous_id or "").strip()
+        elif store_mode == "previous":
+            effective_previous_id = str(chained_previous_id or "").strip()
+            if not effective_previous_id:
+                effective_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
+                if effective_previous_id:
+                    print(f"[INFO] Automatically continuing last interaction from store: {effective_previous_id}")
+        elif store_mode == "manual":
+            effective_previous_id = str(previous_interaction_id or "").strip() or str(chained_previous_id or "").strip()
+        else:
+            effective_previous_id = ""
+
         resolved_safety_settings = cls._resolve_safety_settings(config)
         precomputed_image_hashes = prepared_images["image_hashes"] if prepared_images is not None else None
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
@@ -903,8 +930,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             include_thoughts, thinking_level, media_resolution,
             retry_pattern, max_retries, use_cache=use_cache,
             cache_ttl_minutes=cache_ttl_minutes, cache_seed=cache_seed,
-            image_size=image_size, store=store,
-            previous_interaction_id=previous_interaction_id,
+            image_size=image_size, store=store_mode,
+            previous_interaction_id=effective_previous_id,
             safety_settings=resolved_safety_settings,
             schema_identity=schema_identity,
             precomputed_image_hashes=precomputed_image_hashes,
@@ -913,13 +940,6 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         if cached is not None:
             print(f"[INFO] Returning cached result for fingerprint {fingerprint}")
             return IO.NodeOutput(*cached)
-
-        # Resolve effective previous interaction ID from store if not provided directly
-        effective_previous_id = str(previous_interaction_id or "").strip()
-        if store and not effective_previous_id:
-            effective_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
-            if effective_previous_id:
-                print(f"[INFO] Automatically continuing last interaction from store: {effective_previous_id}")
 
         print(f"[INFO] Starting interaction, model: {model}")
 
@@ -1199,8 +1219,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     kwargs["generation_config"] = call_gen_config
                 if response_formats:
                     kwargs["response_format"] = response_formats
-                if store is not None:
-                    kwargs["store"] = bool(store)
+                kwargs["store"] = store_enabled
                 if target_previous_id and str(target_previous_id).strip():
                     kwargs["previous_interaction_id"] = str(target_previous_id).strip()
 
@@ -1418,7 +1437,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             interaction_id_output = ""
 
         # Record interaction in local store on success
-        if is_success and store and interaction_id_output:
+        if is_success and store_enabled and interaction_id_output:
             GeminiInteractionsStoreManager.record_interaction(interaction_id_output, model)
 
         # Cache the result if seed used and successful
@@ -1440,7 +1459,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 use_proxy=False, proxy_host="127.0.0.1", proxy_port=7890, use_seed=False, seed=0, timeout=30,
                 include_thoughts=False, thinking_level=None, media_resolution=None,
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
-                image_size="None", store=True, previous_interaction_id="",
+                image_size="None", store="new", previous_interaction_id="",
                 video: GeminiVideoConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None,
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
@@ -1512,8 +1531,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         max_retries_val = int(_unwrap_scalar(max_retries, 3))
         timeout_fb_val = str(_unwrap_scalar(timeout_fallback_text, ""))
         img_size_val = str(_unwrap_scalar(image_size, "None"))
-        store_val = bool(_unwrap_scalar(store, True))
+        store_val = cls._normalize_store_mode(_unwrap_scalar(store, "new"))
         resp_schema_val = _unwrap_scalar(response_schema, None)
+        is_prev_id_list = _is_list_arg(previous_interaction_id) and len(previous_interaction_id) > 1
 
         def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
@@ -1530,9 +1550,13 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 s = int(_unwrap_scalar(seed, 0))
 
             sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
-            prev_id = str(_get_aligned(previous_interaction_id, idx, "") or "").strip()
-            if not prev_id and store_val and chained_prev_id:
-                prev_id = chained_prev_id
+            if store_val == "manual":
+                if is_prev_id_list or idx == 0:
+                    prev_id = str(_get_aligned(previous_interaction_id, idx, "") or "").strip()
+                else:
+                    prev_id = ""
+            else:
+                prev_id = ""
 
             return {
                 "config": config_val,
@@ -1567,6 +1591,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 "response_schema": resp_schema_val,
                 "prepared_images": prepared_imgs,
                 "precomputed_video": precomp_vid,
+                "chained_previous_id": chained_prev_id,
             }
 
         if batch_count == 1:
@@ -1615,7 +1640,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 )
             )
             batch_results.append(item_res)
-            if store_val and item_res[5]:
+            if store_val != "disabled" and item_res[5]:
                 chained_interaction_id = str(item_res[5]).strip()
 
         return IO.NodeOutput(
