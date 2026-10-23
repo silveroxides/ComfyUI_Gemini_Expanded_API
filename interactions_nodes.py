@@ -623,7 +623,13 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     def _normalize_store_mode(cls, store: Any) -> str:
         if store is None:
             return "new"
+        if isinstance(store, bool):
+            return "new" if store else "disabled"
         mode = str(store).strip().lower()
+        if mode == "true":
+            return "new"
+        if mode == "false":
+            return "disabled"
         if mode not in cls.STORE_MODES:
             raise ValueError(f"store must be one of: {', '.join(cls.STORE_MODES)}.")
         return mode
@@ -1467,11 +1473,30 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         def _is_list_arg(val):
             return isinstance(val, list) and not isinstance(val, (str, bytes, dict))
 
+        def _extract_seed_list(val):
+            if not isinstance(val, (list, tuple)):
+                return None
+            flat = []
+            for item in val:
+                if isinstance(item, (list, tuple)):
+                    sub = _extract_seed_list(item)
+                    if sub is not None:
+                        flat.extend(sub)
+                elif torch.is_tensor(item):
+                    flat.extend(int(x) for x in item.detach().cpu().reshape(-1).tolist())
+                elif isinstance(item, np.ndarray):
+                    flat.extend(int(x) for x in item.reshape(-1).tolist())
+                elif item is not None:
+                    flat.append(int(item))
+            return flat
+
         is_prompt_list = _is_list_arg(prompt)
         is_video_list = _is_list_arg(video)
-        is_seed_list = _is_list_arg(seed)
+        extracted_seeds = _extract_seed_list(seed)
+        is_seed_list = extracted_seeds is not None
+        is_config_list = _is_list_arg(config)
 
-        is_batch = is_prompt_list or is_video_list or is_seed_list
+        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list
 
         if not is_batch:
             return cls._execute_single(
@@ -1489,12 +1514,14 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
         prompt_list = prompt if is_prompt_list else [prompt]
         video_list = video if is_video_list else [video]
-        seed_list = seed if is_seed_list else [seed]
+        seed_list = extracted_seeds if is_seed_list else [seed]
+        config_list = config if is_config_list else [config]
 
         batch_count = max(
             len(prompt_list) if is_prompt_list else 1,
             len(video_list) if is_video_list else 1,
             len(seed_list) if is_seed_list else 1,
+            len(config_list) if is_config_list else 1,
         )
 
         def _unwrap_scalar(val, default=None):
@@ -1534,24 +1561,43 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         store_val = cls._normalize_store_mode(_unwrap_scalar(store, "new"))
         resp_schema_val = _unwrap_scalar(response_schema, None)
         is_prev_id_list = _is_list_arg(previous_interaction_id) and len(previous_interaction_id) > 1
+        has_multi_seed_input = is_seed_list and len(seed_list) > 1
+        has_multi_turn_list = (is_prompt_list and len(prompt_list) > 1) or (is_video_list and len(video_list) > 1)
 
-        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
+        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None, store_override=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
 
-            if is_seed_list and len(seed_list) >= batch_count:
-                s = int(seed_list[idx])
+            if has_multi_seed_input:
+                if idx < len(seed_list):
+                    s = int(seed_list[idx])
+                else:
+                    base_s = int(seed_list[-1])
+                    s = (base_s + (idx - len(seed_list) + 1)) if base_s != 0 else 0
             elif is_seed_list and len(seed_list) == 1:
                 base_s = int(seed_list[0])
-                s = (base_s + idx) if base_s != 0 else 0
+                s = (base_s + idx) if (base_s != 0 and batch_count > 1) else base_s
             elif not is_seed_list and seed != 0:
-                s = int(seed) + idx
+                s = (int(seed) + idx) if batch_count > 1 else int(seed)
             else:
                 s = int(_unwrap_scalar(seed, 0))
 
+            raw_cfg = _get_aligned(config_list, idx, config_val)
+            item_cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else dict(config_val)
+            if item_cfg.get("use_cache"):
+                if has_multi_seed_input:
+                    item_cfg["cache_seed"] = s
+                elif batch_count > 1 and not (is_config_list and len(config_list) > 1):
+                    base_cs = int(item_cfg.get("cache_seed", 0))
+                    if base_cs != 0:
+                        item_cfg["cache_seed"] = base_cs + idx
+                    elif s != 0:
+                        item_cfg["cache_seed"] = s
+
             sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
-            if store_val == "manual":
-                if is_prev_id_list or idx == 0:
+            eff_store = store_override if store_override is not None else store_val
+            if eff_store == "manual":
+                if is_prev_id_list or idx == 0 or not has_multi_turn_list:
                     prev_id = str(_get_aligned(previous_interaction_id, idx, "") or "").strip()
                 else:
                     prev_id = ""
@@ -1559,7 +1605,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 prev_id = ""
 
             return {
-                "config": config_val,
+                "config": item_cfg,
                 "prompt": p,
                 "system_instruction": sys_inst,
                 "model": model_val,
@@ -1584,7 +1630,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 "max_retries": max_retries_val,
                 "timeout_fallback_text": timeout_fb_val,
                 "image_size": img_size_val,
-                "store": store_val,
+                "store": eff_store,
                 "previous_interaction_id": prev_id,
                 "video": v,
                 "image_inputs": image_inputs,
@@ -1629,18 +1675,30 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
         batch_results = []
         chained_interaction_id = ""
+        initial_previous_id = ""
+        if not has_multi_turn_list and store_val == "previous":
+            initial_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
+
         for idx in range(batch_count):
             cls._check_interrupt()
+            if has_multi_turn_list:
+                item_chained_id = chained_interaction_id
+                item_store_override = None
+            else:
+                # Seed/config variations on the same prompt & video: do not chain variations into each other
+                item_chained_id = initial_previous_id
+                item_store_override = "manual" if (store_val == "previous" and idx > 0) else None
             item_res = cls._execute_single(
                 **make_item_kwargs(
                     idx,
-                    chained_prev_id=chained_interaction_id,
+                    chained_prev_id=item_chained_id,
                     prepared_imgs=prepared_images,
                     precomp_vid=precomputed_video,
+                    store_override=item_store_override,
                 )
             )
             batch_results.append(item_res)
-            if store_val != "disabled" and item_res[5]:
+            if has_multi_turn_list and store_val != "disabled" and item_res[5]:
                 chained_interaction_id = str(item_res[5]).strip()
 
         return IO.NodeOutput(

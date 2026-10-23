@@ -1607,11 +1607,30 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         def _is_list_arg(val):
             return isinstance(val, list) and not isinstance(val, (str, bytes, dict))
 
+        def _extract_seed_list(val):
+            if not isinstance(val, (list, tuple)):
+                return None
+            flat = []
+            for item in val:
+                if isinstance(item, (list, tuple)):
+                    sub = _extract_seed_list(item)
+                    if sub is not None:
+                        flat.extend(sub)
+                elif torch.is_tensor(item):
+                    flat.extend(int(x) for x in item.detach().cpu().reshape(-1).tolist())
+                elif isinstance(item, np.ndarray):
+                    flat.extend(int(x) for x in item.reshape(-1).tolist())
+                elif item is not None:
+                    flat.append(int(item))
+            return flat
+
         is_prompt_list = _is_list_arg(prompt)
         is_video_list = _is_list_arg(video)
-        is_seed_list = _is_list_arg(seed)
+        extracted_seeds = _extract_seed_list(seed)
+        is_seed_list = extracted_seeds is not None
+        is_config_list = _is_list_arg(config)
 
-        is_batch = is_prompt_list or is_video_list or is_seed_list
+        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list
 
         if not is_batch:
             return cls._execute_single(
@@ -1628,12 +1647,14 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         prompt_list = prompt if is_prompt_list else [prompt]
         video_list = video if is_video_list else [video]
-        seed_list = seed if is_seed_list else [seed]
+        seed_list = extracted_seeds if is_seed_list else [seed]
+        config_list = config if is_config_list else [config]
 
         batch_count = max(
             len(prompt_list) if is_prompt_list else 1,
             len(video_list) if is_video_list else 1,
             len(seed_list) if is_seed_list else 1,
+            len(config_list) if is_config_list else 1,
         )
 
         def _unwrap_scalar(val, default=None):
@@ -1671,25 +1692,42 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         timeout_fb_val = str(_unwrap_scalar(timeout_fallback_text, ""))
         img_size_val = str(_unwrap_scalar(image_size, "None"))
         resp_schema_val = _unwrap_scalar(response_schema, None)
+        has_multi_seed_input = is_seed_list and len(seed_list) > 1
 
         def make_item_kwargs(idx, prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
 
-            if is_seed_list and len(seed_list) >= batch_count:
-                s = int(seed_list[idx])
+            if has_multi_seed_input:
+                if idx < len(seed_list):
+                    s = int(seed_list[idx])
+                else:
+                    base_s = int(seed_list[-1])
+                    s = (base_s + (idx - len(seed_list) + 1)) if base_s != 0 else 0
             elif is_seed_list and len(seed_list) == 1:
                 base_s = int(seed_list[0])
-                s = (base_s + idx) if base_s != 0 else 0
+                s = (base_s + idx) if (base_s != 0 and batch_count > 1) else base_s
             elif not is_seed_list and seed != 0:
-                s = int(seed) + idx
+                s = (int(seed) + idx) if batch_count > 1 else int(seed)
             else:
                 s = int(_unwrap_scalar(seed, 0))
+
+            raw_cfg = _get_aligned(config_list, idx, config_val)
+            item_cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else dict(config_val)
+            if item_cfg.get("use_cache"):
+                if has_multi_seed_input:
+                    item_cfg["cache_seed"] = s
+                elif batch_count > 1 and not (is_config_list and len(config_list) > 1):
+                    base_cs = int(item_cfg.get("cache_seed", 0))
+                    if base_cs != 0:
+                        item_cfg["cache_seed"] = base_cs + idx
+                    elif s != 0:
+                        item_cfg["cache_seed"] = s
 
             sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
 
             return {
-                "config": config_val,
+                "config": item_cfg,
                 "prompt": p,
                 "system_instruction": sys_inst,
                 "model": model_val,

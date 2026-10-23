@@ -1761,13 +1761,16 @@ def test_gemini_batch_seeds(structured_client):
         [("final", "Resp 1")],
         [("final", "Resp 2")],
     ]
-    args = _execute_kwargs(_config())
-    args.update(prompt="Single prompt", use_seed=True, seed=[101, 102])
+    args = _execute_kwargs(_config(use_cache=True, cache_seed=615665156))
+    args.update(prompt="Single prompt", use_seed=True, seed=[[101, 102]])
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
 
     assert isinstance(output[0], list) and len(output[0]) == 2
+    assert output[0] == ["Resp 1", "Resp 2"]
     assert output[2] == [101, 102]
     assert len(structured_client.calls) == 2
+    assert structured_client.calls[0]["config"].seed == 101
+    assert structured_client.calls[1]["config"].seed == 102
 
 
 def test_gemini_batch_single_list_element(structured_client):

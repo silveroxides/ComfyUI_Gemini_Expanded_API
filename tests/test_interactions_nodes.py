@@ -778,12 +778,18 @@ def test_interactions_batch_seeds(mock_interactions_client):
         {"text": "A1", "id": "i1"},
         {"text": "A2", "id": "i2"},
     ]
-    args = _execute_kwargs(prompt="Single", use_seed=True, seed=[501, 502])
+    config = _config(use_cache=True, cache_seed=615665156)
+    args = _execute_kwargs(config=config, prompt="Single", use_seed=True, seed=[[501, 502]], store="new")
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
     assert isinstance(output[0], list) and len(output[0]) == 2
+    assert output[0] == ["A1", "A2"]
     assert output[2] == [501, 502]
     assert len(mock_interactions_client.calls) == 2
+    assert mock_interactions_client.calls[0]["generation_config"]["seed"] == 501
+    assert mock_interactions_client.calls[1]["generation_config"]["seed"] == 502
+    assert "previous_interaction_id" not in mock_interactions_client.calls[0]
+    assert "previous_interaction_id" not in mock_interactions_client.calls[1]
 
 
 def test_interactions_batch_videos(mock_interactions_client):
