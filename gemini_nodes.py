@@ -979,6 +979,21 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         comfy.model_management.throw_exception_if_processing_interrupted()
 
     @classmethod
+    def _abort_client_transport(cls, client: Any, client_key: Any = None) -> None:
+        if client_key is not None:
+            cls._client_cache.pop(client_key, None)
+        if client is None:
+            return
+        api_client = getattr(client, "_api_client", None)
+        if api_client is not None:
+            http_client = getattr(api_client, "_httpx_client", None)
+            if http_client is not None and hasattr(http_client, "close"):
+                try:
+                    http_client.close()
+                except Exception:
+                    pass
+
+    @classmethod
     def _wait_for_result(cls, result_queue: "queue.Queue[Tuple[str, Any]]", timeout: float) -> Tuple[str, Any]:
         deadline = time.monotonic() + float(timeout)
         while True:
@@ -1366,8 +1381,11 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             # API call in background thread
             start_time = time.time()
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+            cancel_event = threading.Event()
 
             def generate_once():
+                if cancel_event.is_set():
+                    raise RuntimeError("Request cancelled")
                 # Apply the wire limit even on legacy unseeded image branches.
                 if generate_content_config.seed is not None and not -(2**31) <= generate_content_config.seed < 2**31:
                     generate_content_config.seed = cls._handle_seed(True, generate_content_config.seed)
@@ -1417,6 +1435,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 api_response = None
                 max_retries = 1
                 for attempt in range(max_retries):
+                    if cancel_event.is_set():
+                        return
                     try:
                         if use_seed and actual_seed is not None:
                             try:
@@ -1424,6 +1444,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                             except Exception:
                                 pass
                         response = generate_once()
+                        if cancel_event.is_set():
+                            return
                         if not (response.candidates and getattr(response.candidates[0].content, 'parts', None)):
                             finish_reason = "UNKNOWN"
                             if response.candidates:
@@ -1435,6 +1457,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         break
                     except Exception as e:
                         last_api_exception = e
+                if cancel_event.is_set():
+                    return
                 if api_response is None:
                     result_queue.put(("error", last_api_exception))
                     return
@@ -1563,8 +1587,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                 print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
 
                 except queue.Empty:
+                    cancel_event.set()
+                    cls._abort_client_transport(client, client_key)
                     text_output = timeout_fallback_text or f"Gemini API request/processing timed out, waited {timeout} seconds."
+                except comfy.model_management.InterruptProcessingException:
+                    cancel_event.set()
+                    cls._abort_client_transport(client, client_key)
+                    raise
 
+        except comfy.model_management.InterruptProcessingException:
+            raise
         except Exception as e:
             is_success = False
             print(f"[ERROR] Unhandled error in generate method: {str(e)}")

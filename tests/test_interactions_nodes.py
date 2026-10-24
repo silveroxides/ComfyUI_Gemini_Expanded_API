@@ -471,24 +471,40 @@ def test_retry_pattern_triggers_retry(mock_interactions_client):
 
 
 def test_timeout_fallback(mock_interactions_client, monkeypatch):
+    closed = {"count": 0}
+    retry_cfg = SimpleNamespace(strategy="attempt-count-backoff", max_retries=3, retry_connection_errors=True)
+
+    class FakeHttpClient:
+        def close(self):
+            closed["count"] += 1
+
     def slow_create(**kwargs):
         import time
         time.sleep(1.0)
         return SimpleNamespace(id="slow", output_text="slow")
 
     class SlowInteractions:
+        def __init__(self):
+            self.sdk_configuration = SimpleNamespace(timeout_ms=None, retry_config=retry_cfg, client=FakeHttpClient())
+
         def create(self, **kwargs):
             return slow_create(**kwargs)
 
     class SlowClient:
         def __init__(self, **kwargs):
+            self._api_client = SimpleNamespace(_httpx_client=FakeHttpClient())
             self.interactions = SlowInteractions()
+            self._interactions = self.interactions
 
     monkeypatch.setattr(interactions_nodes.genai, "Client", SlowClient)
     args = _execute_kwargs(timeout=0.1, timeout_fallback_text="Custom timeout message")
     output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
 
     assert output[0] == "Custom timeout message"
+    assert retry_cfg.strategy == "none"
+    assert retry_cfg.max_retries == 0
+    assert closed["count"] >= 1
+    assert len(interactions_nodes.SSL_GeminiInteractionsTextPrompt._client_cache) == 0
 
 
 def test_interactions_api_key_config_with_cache():

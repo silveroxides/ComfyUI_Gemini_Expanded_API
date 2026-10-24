@@ -804,6 +804,38 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         comfy.model_management.throw_exception_if_processing_interrupted()
 
     @classmethod
+    def _configure_interactions_client(cls, client: Any, timeout: float) -> None:
+        try:
+            interactions = getattr(client, "interactions", None)
+            sdk_cfg = getattr(interactions, "sdk_configuration", None)
+            if sdk_cfg is not None:
+                sdk_cfg.timeout_ms = max(1, int(float(timeout) * 1000))
+                retry_cfg = getattr(sdk_cfg, "retry_config", None)
+                if retry_cfg is not None:
+                    retry_cfg.strategy = "none"
+                    retry_cfg.max_retries = 0
+                    retry_cfg.retry_connection_errors = False
+        except Exception:
+            pass
+
+    @classmethod
+    def _abort_client_transport(cls, client: Any, client_key: Any = None) -> None:
+        if client_key is not None:
+            cls._client_cache.pop(client_key, None)
+        if client is None:
+            return
+        for owner in (getattr(client, "_api_client", None), getattr(getattr(client, "_interactions", None), "sdk_configuration", None)):
+            if owner is None:
+                continue
+            for attr in ("_httpx_client", "client"):
+                http_client = getattr(owner, attr, None)
+                if http_client is not None and hasattr(http_client, "close"):
+                    try:
+                        http_client.close()
+                    except Exception:
+                        pass
+
+    @classmethod
     def _wait_for_result(cls, result_queue: "queue.Queue[Tuple[str, Any]]", timeout: float) -> Tuple[str, Any]:
         deadline = time.monotonic() + float(timeout)
         while True:
@@ -1203,10 +1235,14 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 generation_config["thinking_summaries"] = "auto"
 
             # Background worker queue for API call
+            cls._configure_interactions_client(client, timeout)
             start_time = time.time()
             result_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+            cancel_event = threading.Event()
 
             def create_interaction_once(current_seed, target_previous_id):
+                if cancel_event.is_set():
+                    raise RuntimeError("Request cancelled")
                 call_gen_config = dict(generation_config)
                 if use_seed and current_seed is not None:
                     call_gen_config["seed"] = int(current_seed)
@@ -1235,12 +1271,18 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 api_response = None
                 max_attempts = 1
                 for attempt in range(max_attempts):
+                    if cancel_event.is_set():
+                        return
                     try:
                         current_seed = (actual_seed + attempt) if (use_seed and actual_seed is not None) else None
                         response = create_interaction_once(current_seed, effective_previous_id)
+                        if cancel_event.is_set():
+                            return
                         api_response = response
                         break
                     except Exception as e:
+                        if cancel_event.is_set():
+                            return
                         err_str = str(e).lower()
                         # If previous interaction was specified/auto-used but expired or not found, fall back to new interaction
                         if effective_previous_id and ("not found" in err_str or "expired" in err_str or "404" in err_str or "invalid" in err_str):
@@ -1248,12 +1290,16 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                             effective_previous_id = ""
                             try:
                                 response = create_interaction_once(current_seed, "")
+                                if cancel_event.is_set():
+                                    return
                                 api_response = response
                                 break
                             except Exception as retry_err:
                                 last_api_exception = retry_err
                         else:
                             last_api_exception = e
+                if cancel_event.is_set():
+                    return
                 if api_response is None:
                     result_queue.put(("error", last_api_exception))
                     return
@@ -1424,8 +1470,16 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                 print(f"[WARNING] Invalid retry regex pattern: {regex_err}")
 
                 except queue.Empty:
+                    cancel_event.set()
+                    cls._abort_client_transport(client, client_key)
                     text_output = timeout_fallback_text or f"Gemini API request/processing timed out, waited {timeout} seconds."
+                except comfy.model_management.InterruptProcessingException:
+                    cancel_event.set()
+                    cls._abort_client_transport(client, client_key)
+                    raise
 
+        except comfy.model_management.InterruptProcessingException:
+            raise
         except Exception as e:
             is_success = False
             print(f"[ERROR] Unhandled error in generate method: {str(e)}")
