@@ -789,7 +789,7 @@ def test_interactions_batch_seeds(mock_interactions_client):
     assert mock_interactions_client.calls[0]["generation_config"]["seed"] == 501
     assert mock_interactions_client.calls[1]["generation_config"]["seed"] == 502
     assert "previous_interaction_id" not in mock_interactions_client.calls[0]
-    assert "previous_interaction_id" not in mock_interactions_client.calls[1]
+    assert mock_interactions_client.calls[1]["previous_interaction_id"] == "i1"
 
 
 def test_interactions_batch_videos(mock_interactions_client):

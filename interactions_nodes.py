@@ -913,13 +913,11 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         store_mode = cls._normalize_store_mode(store)
         store_enabled = store_mode != "disabled"
         if store_mode == "new":
-            effective_previous_id = str(chained_previous_id or "").strip()
+            effective_previous_id = ""
         elif store_mode == "previous":
-            effective_previous_id = str(chained_previous_id or "").strip()
-            if not effective_previous_id:
-                effective_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
-                if effective_previous_id:
-                    print(f"[INFO] Automatically continuing last interaction from store: {effective_previous_id}")
+            effective_previous_id = str(chained_previous_id or "").strip() or GeminiInteractionsStoreManager.get_last_interaction_id()
+            if effective_previous_id:
+                print(f"[INFO] Automatically continuing last interaction from store: {effective_previous_id}")
         elif store_mode == "manual":
             effective_previous_id = str(previous_interaction_id or "").strip() or str(chained_previous_id or "").strip()
         else:
@@ -1562,9 +1560,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         resp_schema_val = _unwrap_scalar(response_schema, None)
         is_prev_id_list = _is_list_arg(previous_interaction_id) and len(previous_interaction_id) > 1
         has_multi_seed_input = is_seed_list and len(seed_list) > 1
-        has_multi_turn_list = (is_prompt_list and len(prompt_list) > 1) or (is_video_list and len(video_list) > 1)
 
-        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None, store_override=None):
+        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
 
@@ -1595,9 +1592,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                         item_cfg["cache_seed"] = s
 
             sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
-            eff_store = store_override if store_override is not None else store_val
+            eff_store = "previous" if (store_val == "new" and idx > 0) else store_val
             if eff_store == "manual":
-                if is_prev_id_list or idx == 0 or not has_multi_turn_list:
+                if is_prev_id_list or idx == 0:
                     prev_id = str(_get_aligned(previous_interaction_id, idx, "") or "").strip()
                 else:
                     prev_id = ""
@@ -1675,30 +1672,18 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
         batch_results = []
         chained_interaction_id = ""
-        initial_previous_id = ""
-        if not has_multi_turn_list and store_val == "previous":
-            initial_previous_id = GeminiInteractionsStoreManager.get_last_interaction_id()
-
         for idx in range(batch_count):
             cls._check_interrupt()
-            if has_multi_turn_list:
-                item_chained_id = chained_interaction_id
-                item_store_override = None
-            else:
-                # Seed/config variations on the same prompt & video: do not chain variations into each other
-                item_chained_id = initial_previous_id
-                item_store_override = "manual" if (store_val == "previous" and idx > 0) else None
             item_res = cls._execute_single(
                 **make_item_kwargs(
                     idx,
-                    chained_prev_id=item_chained_id,
+                    chained_prev_id=chained_interaction_id,
                     prepared_imgs=prepared_images,
                     precomp_vid=precomputed_video,
-                    store_override=item_store_override,
                 )
             )
             batch_results.append(item_res)
-            if has_multi_turn_list and store_val != "disabled" and item_res[5]:
+            if store_val != "disabled" and item_res[5]:
                 chained_interaction_id = str(item_res[5]).strip()
 
         return IO.NodeOutput(
