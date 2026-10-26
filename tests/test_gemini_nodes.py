@@ -1791,18 +1791,21 @@ def test_gemini_batch_single_list_element(structured_client):
     assert len(structured_client.calls) == 1
 
 
-def test_gemini_batch_videos(structured_client):
+def test_gemini_batch_images_list(structured_client):
     structured_client.responses = [
-        [("final", "Vid 1")],
-        [("final", "Vid 2")],
+        [("final", "Img Resp 1")],
+        [("final", "Img Resp 2")],
     ]
     args = _execute_kwargs(_config())
     args.update(
-        prompt="Describe video",
-        video=[{"video": None, "fps": 1}, {"video": None, "fps": 1}],
+        prompt="Describe image",
+        image_inputs={
+            "image_1": [torch.full((1, 4, 4, 3), 0.1), torch.full((1, 4, 4, 3), 0.2)],
+            "image_2": [torch.full((1, 4, 4, 3), 0.3), torch.full((1, 4, 4, 3), 0.4)],
+        },
     )
     output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
 
-    assert isinstance(output[0], list)
-    assert output[0] == ["Vid 1", "Vid 2"]
+    assert isinstance(output[0], list) and len(output[0]) == 2
+    assert output[0] == ["Img Resp 1", "Img Resp 2"]
     assert len(structured_client.calls) == 2

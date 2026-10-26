@@ -1549,8 +1549,14 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         extracted_seeds = _extract_seed_list(seed)
         is_seed_list = extracted_seeds is not None
         is_config_list = _is_list_arg(config)
+        max_image_list_len = (
+            max((len(v) for v in image_inputs.values() if _is_list_arg(v)), default=0)
+            if isinstance(image_inputs, dict)
+            else 0
+        )
+        is_image_list = max_image_list_len > 0
 
-        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list
+        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list or is_image_list
 
         if not is_batch:
             return cls._execute_single(
@@ -1576,6 +1582,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             len(video_list) if is_video_list else 1,
             len(seed_list) if is_seed_list else 1,
             len(config_list) if is_config_list else 1,
+            max_image_list_len if is_image_list else 1,
         )
 
         def _unwrap_scalar(val, default=None):
@@ -1616,11 +1623,24 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         resp_schema_val = _unwrap_scalar(response_schema, None)
         is_prev_id_list = _is_list_arg(previous_interaction_id) and len(previous_interaction_id) > 1
         base_seed = int(seed_list[0]) if (is_seed_list and len(seed_list) > 0) else int(_unwrap_scalar(seed, 0))
-        has_distinct_item_inputs = (is_prompt_list and len(prompt_list) > 1) or (is_video_list and len(video_list) > 1)
+        has_distinct_item_inputs = (
+            (is_prompt_list and len(prompt_list) > 1)
+            or (is_video_list and len(video_list) > 1)
+            or (max_image_list_len > 1)
+        )
 
         def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
+            if isinstance(image_inputs, dict):
+                item_imgs = {}
+                for k, val in image_inputs.items():
+                    if _is_list_arg(val) and val:
+                        item_imgs[k] = val[min(idx, len(val) - 1)]
+                    else:
+                        item_imgs[k] = val
+            else:
+                item_imgs = image_inputs
 
             s = (base_seed + idx) if (base_seed != 0 and batch_count > 1) else base_seed
             fp_seed = base_seed if has_distinct_item_inputs else s
@@ -1667,7 +1687,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 "store": eff_store,
                 "previous_interaction_id": prev_id,
                 "video": v,
-                "image_inputs": image_inputs,
+                "image_inputs": item_imgs,
                 "response_schema": resp_schema_val,
                 "prepared_images": prepared_imgs,
                 "precomputed_video": precomp_vid,
@@ -1688,7 +1708,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
         print(f"[INFO] Preparing sequential list execution for {batch_count} items (model: {model_val})")
         prepared_images = None
-        if image_inputs and model_val not in cls.IMAGE_MODELS:
+        if image_inputs and max_image_list_len <= 1 and model_val not in cls.IMAGE_MODELS:
             try:
                 prepared_images = cls._prepare_image_inputs(image_inputs)
             except Exception:
