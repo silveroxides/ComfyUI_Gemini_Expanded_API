@@ -861,7 +861,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                         response_schema: ResponseSchema.Type | None = None,
                         prepared_images: dict[str, Any] | None = None,
                         precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None,
-                        chained_previous_id: str = "") -> IO.NodeOutput:
+                        chained_previous_id: str = "",
+                        fingerprint_seed: int | None = None) -> IO.NodeOutput:
 
         cls._check_interrupt()
         print(f"[INFO] SSL_GeminiInteractionsTextPrompt execute called, model: {model}")
@@ -911,6 +912,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         use_cache = bool(config.get("use_cache", False))
         cache_ttl_minutes = int(config.get("cache_ttl_minutes", 60))
         cache_seed = int(config.get("cache_seed", 0))
+        fp_seed = int(seed if fingerprint_seed is None else fingerprint_seed)
 
         schema_identity = None
         schema_snapshot = None
@@ -959,7 +961,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         precomputed_image_hashes = prepared_images["image_hashes"] if prepared_images is not None else None
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, max_output_tokens,
-            include_images, aspect_ratio, bypass_mode, use_seed, seed,
+            include_images, aspect_ratio, bypass_mode, use_seed, fp_seed,
             video_hash, video_mime_type, video_fps,
             image_inputs,
             use_proxy, proxy_host, proxy_port, timeout,
@@ -1613,37 +1615,18 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         store_val = cls._normalize_store_mode(_unwrap_scalar(store, "new"))
         resp_schema_val = _unwrap_scalar(response_schema, None)
         is_prev_id_list = _is_list_arg(previous_interaction_id) and len(previous_interaction_id) > 1
-        has_multi_seed_input = is_seed_list and len(seed_list) > 1
+        base_seed = int(seed_list[0]) if (is_seed_list and len(seed_list) > 0) else int(_unwrap_scalar(seed, 0))
+        has_distinct_item_inputs = (is_prompt_list and len(prompt_list) > 1) or (is_video_list and len(video_list) > 1)
 
         def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
 
-            if has_multi_seed_input:
-                if idx < len(seed_list):
-                    s = int(seed_list[idx])
-                else:
-                    base_s = int(seed_list[-1])
-                    s = (base_s + (idx - len(seed_list) + 1)) if base_s != 0 else 0
-            elif is_seed_list and len(seed_list) == 1:
-                base_s = int(seed_list[0])
-                s = (base_s + idx) if (base_s != 0 and batch_count > 1) else base_s
-            elif not is_seed_list and seed != 0:
-                s = (int(seed) + idx) if batch_count > 1 else int(seed)
-            else:
-                s = int(_unwrap_scalar(seed, 0))
+            s = (base_seed + idx) if (base_seed != 0 and batch_count > 1) else base_seed
+            fp_seed = base_seed if has_distinct_item_inputs else s
 
             raw_cfg = _get_aligned(config_list, idx, config_val)
             item_cfg = dict(raw_cfg) if isinstance(raw_cfg, dict) else dict(config_val)
-            if item_cfg.get("use_cache"):
-                if has_multi_seed_input:
-                    item_cfg["cache_seed"] = s
-                elif batch_count > 1 and not (is_config_list and len(config_list) > 1):
-                    base_cs = int(item_cfg.get("cache_seed", 0))
-                    if base_cs != 0:
-                        item_cfg["cache_seed"] = base_cs + idx
-                    elif s != 0:
-                        item_cfg["cache_seed"] = s
 
             sys_inst = _get_aligned(system_instruction, idx, "You are a helpful AI assistant.")
             eff_store = "previous" if (store_val == "new" and idx > 0) else store_val
@@ -1689,6 +1672,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 "prepared_images": prepared_imgs,
                 "precomputed_video": precomp_vid,
                 "chained_previous_id": chained_prev_id,
+                "fingerprint_seed": fp_seed,
             }
 
         if batch_count == 1:
