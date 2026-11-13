@@ -265,7 +265,16 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     GEMINI_3_8_FLASH = "gemini-3.8-flash"
     GEMINI_4_ARGON = "gemini-4-argon"
     GEMINI_4_ARGON_CYBER_PERMISSIVE = "gemini-4-argon-cyber-permissive"
+    GEMINI_4_CARBON = "gemini-4-carbon"
+    GEMINI_4_CARBON_CYBER_PERMISSIVE = "gemini-4-carbon-cyber-permissive"
+    GEMINI_4_HYDROGEN = "gemini-4-hydrogen"
     ARGON_MODELS = (GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE)
+    GEMINI_4_MODELS = (
+        *ARGON_MODELS,
+        GEMINI_4_CARBON,
+        GEMINI_4_CARBON_CYBER_PERMISSIVE,
+        GEMINI_4_HYDROGEN,
+    )
     VIDEO_MIME_TYPE = "video/mp4"
     VIDEO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
 
@@ -287,11 +296,11 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     THINKING_MODELS = [
         "gemini-1.5-pro-002", "gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash-thinking-exp-1219",
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25",
-        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
+        "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_CARBON, GEMINI_4_CARBON_CYBER_PERMISSIVE, GEMINI_4_HYDROGEN, GEMINI_4_FLASH_PREVIEW, "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"
     ]
     GEN3_THINKING_MODELS = [
         "gemini-pro-latest", "gemini-flash-latest", "gemini-3.1-pro-preview",
-        "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_FLASH_PREVIEW
+        "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", GEMINI_3_7_FLASH, GEMINI_3_8_FLASH, GEMINI_4_ARGON, GEMINI_4_ARGON_CYBER_PERMISSIVE, GEMINI_4_CARBON, GEMINI_4_CARBON_CYBER_PERMISSIVE, GEMINI_4_HYDROGEN, GEMINI_4_FLASH_PREVIEW
     ]
     IMAGE_MODELS = [
         "gemini-2.5-flash-image",
@@ -325,11 +334,11 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 cls.GemConfig.Input("config"),
                 IO.String.Input("prompt", multiline=True),
                 IO.String.Input("system_instruction", default="You are a helpful AI assistant.", multiline=True),
-                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
+                IO.Combo.Input("model", options=["gemini-1.5-pro-002", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE, cls.GEMINI_4_CARBON, cls.GEMINI_4_CARBON_CYBER_PERMISSIVE, cls.GEMINI_4_HYDROGEN, "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-pro-latest", "gemini-flash-latest", "gemini-flash-lite-latest"], default="gemini-2.5-flash"),
                 IO.Float.Input("temperature", default=1.0, min=0.0, max=1.0, step=0.01, tooltip="Ignored in Interactions API"),
                 IO.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01, tooltip="Ignored in Interactions API"),
                 IO.Int.Input("top_k", default=40, min=1, max=100, step=1, tooltip="Ignored in Interactions API"),
-                IO.Int.Input("max_output_tokens", default=8192, min=1, max=65536, step=1),
+                IO.Int.Input("max_output_tokens", default=8192, min=1, max=1048576, step=1),
                 IO.Boolean.Input("include_images", default=False),
                 IO.Combo.Input("aspect_ratio", options=["None", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9", "1:8", "8:1", "1:4", "4:1"], default="None"),
                 IO.Combo.Input("bypass_mode", options=["None", "system_instruction", "prompt", "both"], default="None"),
@@ -339,9 +348,9 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 IO.Int.Input("proxy_port", default=7890, min=1, max=65535),
                 IO.Boolean.Input("use_seed", default=True),
                 IO.Int.Input("seed", default=0, min=0, max=2147483647),
-                IO.Int.Input("timeout", default=30, min=15, max=300, step=15),
+                IO.Int.Input("timeout", default=30, min=15, max=1200, step=15),
                 IO.Boolean.Input("include_thoughts", default=False),
-                IO.Combo.Input("thinking_level", options=["None", "minimal", "low", "medium", "high"], default="low", tooltip="Thinking level for reasoning models."),
+                IO.Combo.Input("thinking_level", options=["None", "minimal", "low", "medium", "high", "xhigh"], default="low", tooltip="Thinking level for reasoning models. 'xhigh' is supported only by Gemini 4 Hydrogen."),
                 IO.Combo.Input("media_resolution", options=["unspecified", "low", "medium", "high", "ultra_high"], default="unspecified", tooltip="Set input media resolution for image, video and pdf."),
                 IO.String.Input("retry_pattern", default="(PROHIBITED_CONTENT|UNAVAILABLE|request/processing|RESOURCE_EXHAUSTED)", optional=True, multiline=False, tooltip="Regex pattern to match in response text. If matched, retry with new seed. Leave empty to disable."),
                 IO.Int.Input("max_retries", default=3, min=0, max=10, step=1, tooltip="Maximum number of retry attempts when pattern matches. 0 disables retry."),
@@ -569,19 +578,34 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     @classmethod
     def _resolve_gemini_3_7_thinking_level(cls, thinking_level, model_name=None):
         if thinking_level is None or thinking_level == "None":
-            if model_name == cls.GEMINI_4_ARGON_CYBER_PERMISSIVE:
+            if model_name in (
+                cls.GEMINI_4_ARGON_CYBER_PERMISSIVE,
+                cls.GEMINI_4_CARBON_CYBER_PERMISSIVE,
+                cls.GEMINI_4_HYDROGEN,
+            ):
                 return "high"
             return "medium"
         if thinking_level == "minimal":
-            if model_name in (cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
+            if model_name in (cls.GEMINI_3_8_FLASH, *cls.GEMINI_4_MODELS):
+                allowed = (
+                    "low, medium, high, or xhigh"
+                    if model_name == cls.GEMINI_4_HYDROGEN
+                    else "low, medium, or high"
+                )
                 raise ValueError(
-                    f"{model_name} thinking_level must be low, medium, or high."
+                    f"{model_name} thinking_level must be {allowed}."
                 )
             print(
                 f"[WARNING] {model_name or 'Gemini 3.7 Flash'} does not support minimal "
                 "thinking; using low instead."
             )
             return "low"
+        if thinking_level == "xhigh":
+            if model_name != cls.GEMINI_4_HYDROGEN:
+                raise ValueError(
+                    f"{model_name or 'This model'} does not support xhigh thinking_level."
+                )
+            return "xhigh"
         if thinking_level not in {"low", "medium", "high"}:
             raise ValueError(
                 f"{model_name or 'Gemini 3.7 Flash'} thinking_level must be low, medium, or high."
@@ -672,15 +696,19 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             eff_aspect_ratio = str(aspect_ratio)
             eff_image_size = "None" if image_size in (None, "None") else str(image_size)
 
-        elif model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
+        elif model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, *cls.GEMINI_4_MODELS):
             eff_thinking_level = cls._resolve_gemini_3_7_thinking_level(thinking_level, model)
             eff_include_thoughts = include_thoughts
 
         elif model in cls.GEN3_THINKING_MODELS and thinking_level not in (None, "None"):
+            if thinking_level == "xhigh":
+                raise ValueError(f"{model} does not support xhigh thinking_level.")
             eff_thinking_level = thinking_level
             eff_include_thoughts = include_thoughts
 
         elif thinking_level not in (None, "None"):
+            if thinking_level == "xhigh":
+                raise ValueError(f"{model} does not support xhigh thinking_level.")
             eff_thinking_level = thinking_level
             eff_include_thoughts = include_thoughts
 
@@ -1219,11 +1247,15 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
             # Assemble generation_config
             effective_thinking_level = None
-            if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, cls.GEMINI_4_ARGON, cls.GEMINI_4_ARGON_CYBER_PERMISSIVE):
+            if model in (cls.GEMINI_3_7_FLASH, cls.GEMINI_3_8_FLASH, *cls.GEMINI_4_MODELS):
                 effective_thinking_level = cls._resolve_gemini_3_7_thinking_level(thinking_level, model)
             elif model in cls.GEN3_THINKING_MODELS and thinking_level not in (None, "None"):
+                if thinking_level == "xhigh":
+                    raise ValueError(f"{model} does not support xhigh thinking_level.")
                 effective_thinking_level = thinking_level
             elif thinking_level not in (None, "None"):
+                if thinking_level == "xhigh":
+                    raise ValueError(f"{model} does not support xhigh thinking_level.")
                 effective_thinking_level = thinking_level
 
             generation_config: dict[str, Any] = {}
@@ -1252,6 +1284,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 kwargs: dict[str, Any] = {
                     "model": model,
                     "input": input_contents,
+                    "timeout": float(timeout),
                 }
                 if resolved_safety_settings is not None:
                     kwargs["safety_settings"] = list(resolved_safety_settings)

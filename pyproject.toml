@@ -3,7 +3,7 @@ name = "ComfyUI_Gemini_Expanded_API"
 description = "Node for usage of Gemini API"
 version = "1.6.2"
 license = {file = "LICENSE"}
-dependencies = ["google-genai>=2.17.0", "numpy", "torch"]
+dependencies = ["google-genai>=2.34.0", "numpy", "torch"]
 
 [project.urls]
 Repository = "https://github.com/silveroxides/ComfyUI_Gemini_Expanded_API"

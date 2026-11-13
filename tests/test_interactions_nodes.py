@@ -828,3 +828,72 @@ def test_interactions_batch_videos(mock_interactions_client):
     assert len(mock_interactions_client.calls) == 2
 
 
+def test_interactions_gemini_4_carbon_and_hydrogen_schema_and_limits():
+    schema = interactions_nodes.SSL_GeminiInteractionsTextPrompt.define_schema()
+    inputs = {inp.id: inp for inp in schema.inputs}
+
+    for model_id in (
+        "gemini-4-carbon",
+        "gemini-4-carbon-cyber-permissive",
+        "gemini-4-hydrogen",
+    ):
+        assert model_id in inputs["model"].options
+        assert model_id in interactions_nodes.SSL_GeminiInteractionsTextPrompt.THINKING_MODELS
+        assert model_id in interactions_nodes.SSL_GeminiInteractionsTextPrompt.GEN3_THINKING_MODELS
+
+    assert "xhigh" in inputs["thinking_level"].options
+    assert inputs["max_output_tokens"].max == 1048576
+    assert inputs["timeout"].max == 1200
+
+
+def test_interactions_gemini_4_carbon_and_hydrogen_thinking(mock_interactions_client):
+    mock_interactions_client.responses = [
+        {"text": "carbon", "thoughts": "t1", "id": "int_c1"},
+        {"text": "carbon cyber", "thoughts": "t2", "id": "int_c2"},
+        {"text": "hydrogen", "thoughts": "t3", "id": "int_h1"},
+        {"text": "hydrogen xhigh", "thoughts": "t4", "id": "int_h2"},
+    ]
+
+    for idx, (model_id, selected, expected) in enumerate([
+        ("gemini-4-carbon", "None", "medium"),
+        ("gemini-4-carbon-cyber-permissive", "None", "high"),
+        ("gemini-4-hydrogen", "None", "high"),
+        ("gemini-4-hydrogen", "xhigh", "xhigh"),
+    ]):
+        args = _execute_kwargs(
+            model=model_id,
+            thinking_level=selected,
+            include_thoughts=True,
+            max_output_tokens=131072,
+            timeout=1200,
+        )
+        interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+        call = mock_interactions_client.calls[idx]
+        assert call["model"] == model_id
+        assert call["generation_config"]["thinking_level"] == expected
+        assert call["generation_config"]["thinking_summaries"] == "auto"
+        assert call["generation_config"]["max_output_tokens"] == 131072
+        assert call["timeout"] == 1200.0
+
+
+@pytest.mark.parametrize(
+    ("model_id", "bad_level"),
+    [
+        ("gemini-4-carbon", "minimal"),
+        ("gemini-4-carbon-cyber-permissive", "minimal"),
+        ("gemini-4-hydrogen", "minimal"),
+        ("gemini-4-carbon", "xhigh"),
+        ("gemini-4-carbon-cyber-permissive", "xhigh"),
+        ("gemini-4-argon", "xhigh"),
+        ("gemini-3.8-flash", "xhigh"),
+        ("gemini-3.1-pro-preview", "xhigh"),
+    ],
+)
+def test_interactions_gemini_4_rejects_invalid_thinking_levels(mock_interactions_client, model_id, bad_level):
+    args = _execute_kwargs(model=model_id, thinking_level=bad_level)
+    with pytest.raises(ValueError):
+        interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+    assert len(mock_interactions_client.calls) == 0
+
+
+

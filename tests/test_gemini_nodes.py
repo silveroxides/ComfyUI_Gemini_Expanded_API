@@ -58,6 +58,9 @@ def structured_client(monkeypatch):
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_3_8_FLASH, {"thinking_level": "medium"}),
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON, {"thinking_level": "medium"}),
     (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_ARGON_CYBER_PERMISSIVE, {"thinking_level": "high"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_CARBON, {"thinking_level": "medium"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_CARBON_CYBER_PERMISSIVE, {"thinking_level": "high"}),
+    (gemini_nodes.SSL_GeminiTextPrompt.GEMINI_4_HYDROGEN, {"thinking_level": "high"}),
 ])
 @pytest.mark.parametrize("client_config", [{}, {"vertexai_express": True}, {"use_vertexai_env": True, "vertexai_project": "test", "vertexai_location": "global"}])
 def test_builder_schema_reaches_generate_content(structured_client, monkeypatch, model, settings, client_config):
@@ -1809,3 +1812,144 @@ def test_gemini_batch_images_list(structured_client):
     assert isinstance(output[0], list) and len(output[0]) == 2
     assert output[0] == ["Img Resp 1", "Img Resp 2"]
     assert len(structured_client.calls) == 2
+
+
+def test_gemini_4_carbon_and_hydrogen_schema_and_limits():
+    schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
+    inputs = {inp.id: inp for inp in schema.inputs}
+
+    for model_id in (
+        "gemini-4-carbon",
+        "gemini-4-carbon-cyber-permissive",
+        "gemini-4-hydrogen",
+    ):
+        assert model_id in inputs["model"].options
+        assert model_id in gemini_nodes.SSL_GeminiTextPrompt.THINKING_MODELS
+        assert model_id in gemini_nodes.SSL_GeminiTextPrompt.GEN3_THINKING_MODELS
+        assert model_id in gemini_nodes.SSL_GeminiTextPrompt.MEDIA_RES_MODELS
+
+    assert "xhigh" in inputs["thinking_level"].options
+    assert inputs["max_output_tokens"].max == 1048576
+    assert inputs["timeout"].max == 1200
+
+
+@pytest.mark.parametrize(
+    ("model_id", "selected", "expected"),
+    [
+        ("gemini-4-carbon", "None", "MEDIUM"),
+        ("gemini-4-carbon-cyber-permissive", "None", "HIGH"),
+        ("gemini-4-hydrogen", "None", "HIGH"),
+        ("gemini-4-hydrogen", "xhigh", "xhigh"),
+        ("gemini-4-hydrogen", "low", "LOW"),
+    ],
+)
+def test_gemini_4_carbon_and_hydrogen_thinking_config(model_id, selected, expected):
+    config = gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+        model=model_id,
+        temperature=0.4,
+        top_p=0.8,
+        top_k=20,
+        max_output_tokens=131072,
+        seed=7,
+        include_images=False,
+        response_modalities=["TEXT"],
+        aspect_ratio="None",
+        padded_system_instruction="system",
+        thinking_level=selected,
+        thinking_budget=4096,
+        include_thoughts=True,
+        media_resolution="unspecified",
+    )
+
+    assert config.thinking_config.thinking_level.value == expected
+    assert config.thinking_config.thinking_budget is None
+    assert config.max_output_tokens == 131072
+    assert config.temperature is None
+    assert config.top_p is None
+    assert config.top_k is None
+
+
+@pytest.mark.parametrize(
+    ("model_id", "bad_level"),
+    [
+        ("gemini-4-carbon", "minimal"),
+        ("gemini-4-carbon-cyber-permissive", "minimal"),
+        ("gemini-4-hydrogen", "minimal"),
+        ("gemini-4-carbon", "xhigh"),
+        ("gemini-4-carbon-cyber-permissive", "xhigh"),
+        ("gemini-4-argon", "xhigh"),
+        ("gemini-3.8-flash", "xhigh"),
+        ("gemini-3.1-pro-preview", "xhigh"),
+    ],
+)
+def test_gemini_4_invalid_thinking_levels_rejected(model_id, bad_level):
+    with pytest.raises(ValueError):
+        gemini_nodes.SSL_GeminiTextPrompt._build_generate_content_config(
+            model=model_id,
+            temperature=1.0,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=8192,
+            seed=7,
+            include_images=False,
+            response_modalities=["TEXT"],
+            aspect_ratio="None",
+            padded_system_instruction="system",
+            thinking_level=bad_level,
+            thinking_budget=0,
+            include_thoughts=False,
+            media_resolution="unspecified",
+        )
+
+
+@pytest.mark.parametrize("model_id", ["gemini-4-carbon", "gemini-4-carbon-cyber-permissive", "gemini-4-hydrogen"])
+def test_gemini_4_carbon_and_hydrogen_skip_explicit_context_cache(structured_client, model_id):
+    structured_client.responses = [[("final", "gemini4 response")]]
+    args = _execute_kwargs(_config(use_cache=True, cache_seed=42))
+    args["model"] = model_id
+    args["max_output_tokens"] = 131072
+    args["timeout"] = 1200
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(**args)
+
+    assert output[0] == "gemini4 response"
+    assert len(structured_client.calls) == 1
+    sent_config = structured_client.calls[0]["config"]
+    assert sent_config.cached_content is None
+    assert sent_config.max_output_tokens == 131072
+    assert sent_config.http_options.timeout == 1200000
+
+
+@pytest.mark.parametrize("model_id", ["gemini-4-carbon", "gemini-4-hydrogen"])
+def test_gemini_4_carbon_and_hydrogen_fingerprint_omits_sampling_params(model_id):
+    common = {
+        "config": {"api_key": "key", "api_version": "v1"},
+        "prompt": "prompt",
+        "system_instruction": "system",
+        "model": model_id,
+        "max_output_tokens": 131072,
+        "include_images": False,
+        "aspect_ratio": "None",
+        "bypass_mode": "None",
+        "use_seed": False,
+        "seed": 0,
+    }
+
+    fp1, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.1,
+        top_p=0.5,
+        top_k=10,
+        thinking_budget=0,
+        thinking_level="None",
+    )
+    fp2, _ = gemini_nodes.SSL_GeminiTextPrompt._compute_fingerprint_and_check_cache(
+        **common,
+        temperature=0.9,
+        top_p=0.99,
+        top_k=90,
+        thinking_budget=1000,
+        thinking_level="high" if model_id == "gemini-4-hydrogen" else "medium",
+    )
+    assert fp1 == fp2
+
