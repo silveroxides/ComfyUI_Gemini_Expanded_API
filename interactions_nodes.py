@@ -29,6 +29,7 @@ from .gemini_nodes import (
     GetKeyAPI,
     SSL_GeminiAPIKeyConfig,
     SSL_GeminiVideoConfig,
+    SSL_GeminiAudioConfig,
     SSL_GeminiTextPrompt,
 )
 
@@ -258,6 +259,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
     ResponseSchema = IO.Custom("GEMINI_RESPONSE_SCHEMA")
     GeminiVideoConfig = IO.Custom("GEMINI_VIDEO_CONFIG")
+    GeminiAudioConfig = IO.Custom("GEMINI_AUDIO_CONFIG")
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint) -> successful_gemini_seed
     _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
@@ -359,6 +361,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 IO.Combo.Input("store", options=["new", "previous", "manual", "disabled"], default="new", optional=True, tooltip="Session mode: 'new' starts a fresh interaction and stores it; 'previous' continues the last stored interaction; 'manual' continues from previous_interaction_id; 'disabled' does not store or continue."),
                 IO.String.Input("previous_interaction_id", default="", optional=True, multiline=False, tooltip="ID of previous interaction to continue when store is set to 'manual'."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
+                cls.GeminiAudioConfig.Input("audio", optional=True, tooltip="Optional configured Gemini audio inputs."),
                 cls.ResponseSchema.Input("response_schema", display_name="Response format", optional=True,
                                          tooltip="Connect an answer format to request the fields you defined. Leave disconnected for a normal answer."),
                 IO.Autogrow.Input(
@@ -659,6 +662,10 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         return mode
 
     @classmethod
+    def _serialize_audio(cls, audio_config: dict[str, Any] | None) -> tuple[list[tuple[bytes, str]], bool]:
+        return SSL_GeminiTextPrompt._serialize_audio(audio_config)
+
+    @classmethod
     def _compute_fingerprint_and_check_cache(cls, config, prompt, system_instruction, model, max_output_tokens,
                                              include_images, aspect_ratio, bypass_mode, use_seed, seed,
                                              video_hash=None, video_mime_type=None, video_fps=None,
@@ -668,7 +675,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                                              retry_pattern="", max_retries=3, use_cache=False,
                                              cache_ttl_minutes=60, cache_seed=0, image_size="None",
                                              store="new", previous_interaction_id="", safety_settings=None,
-                                             schema_identity=None, precomputed_image_hashes=None):
+                                             schema_identity=None, precomputed_image_hashes=None,
+                                             audio_hashes=(), audio_mime_types=()):
 
         def get_tensor_hash(tensor):
             if tensor is None:
@@ -737,6 +745,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             video_hash,
             video_mime_type,
             video_fps,
+            tuple(audio_hashes),
+            tuple(audio_mime_types),
             image_hashes,
             bool(use_proxy),
             str(proxy_host),
@@ -885,10 +895,12 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                         retry_pattern="", max_retries=3, timeout_fallback_text="",
                         image_size="None", store="new", previous_interaction_id="",
                         video: GeminiVideoConfig.Type | None = None,
+                        audio: GeminiAudioConfig.Type | None = None,
                         image_inputs: IO.Autogrow.Type | None = None,
                         response_schema: ResponseSchema.Type | None = None,
                         prepared_images: dict[str, Any] | None = None,
                         precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None,
+                        precomputed_audio: Tuple[list[tuple[bytes, str]], tuple[str, ...], tuple[str, ...]] | None = None,
                         chained_previous_id: str = "",
                         fingerprint_seed: int | None = None) -> IO.NodeOutput:
 
@@ -925,6 +937,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 timeout_fallback_text=timeout_fallback_text,
                 image_size=image_size,
                 video=video,
+                audio=audio,
                 image_inputs=image_inputs,
                 response_schema=response_schema,
             )
@@ -972,6 +985,17 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "", "")
 
             video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        if precomputed_audio is not None:
+            audio_items, audio_hashes, audio_mime_types = precomputed_audio
+        else:
+            try:
+                audio_items, _ = cls._serialize_audio(audio)
+            except Exception as e:
+                print(f"[ERROR] Error processing input audio: {e}")
+                output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
+                return IO.NodeOutput(f"Error processing input audio: {e}", cls.generate_empty_image(), output_seed, "", "", "")
+            audio_hashes = tuple(hashlib.sha256(b).hexdigest() for b, _ in audio_items)
+            audio_mime_types = tuple(m for _, m in audio_items)
         store_mode = cls._normalize_store_mode(store)
         store_enabled = store_mode != "disabled"
         if store_mode == "new":
@@ -1001,6 +1025,8 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             safety_settings=resolved_safety_settings,
             schema_identity=schema_identity,
             precomputed_image_hashes=precomputed_image_hashes,
+            audio_hashes=audio_hashes,
+            audio_mime_types=audio_mime_types,
         )
 
         if cached is not None:
@@ -1217,6 +1243,13 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 if media_resolution and media_resolution != "unspecified":
                     v_item["resolution"] = media_resolution.lower()
                 media_items.append(v_item)
+
+            for audio_bytes, audio_mime_type in audio_items:
+                media_items.append({
+                    "type": "audio",
+                    "data": BytesIO(audio_bytes),
+                    "mime_type": audio_mime_type,
+                })
 
             text_item = {"type": "text", "text": padded_prompt}
             if media_items:
@@ -1554,6 +1587,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
                 image_size="None", store="new", previous_interaction_id="",
                 video: GeminiVideoConfig.Type | None = None,
+                audio: GeminiAudioConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None,
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
 
@@ -1579,6 +1613,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
 
         is_prompt_list = _is_list_arg(prompt)
         is_video_list = _is_list_arg(video)
+        is_audio_list = _is_list_arg(audio)
         extracted_seeds = _extract_seed_list(seed)
         is_seed_list = extracted_seeds is not None
         is_config_list = _is_list_arg(config)
@@ -1589,7 +1624,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         )
         is_image_list = max_image_list_len > 0
 
-        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list or is_image_list
+        is_batch = is_prompt_list or is_video_list or is_audio_list or is_seed_list or is_config_list or is_image_list
 
         if not is_batch:
             return cls._execute_single(
@@ -1602,17 +1637,19 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 media_resolution=media_resolution, retry_pattern=retry_pattern, max_retries=max_retries,
                 timeout_fallback_text=timeout_fallback_text, image_size=image_size, store=store,
                 previous_interaction_id=previous_interaction_id,
-                video=video, image_inputs=image_inputs, response_schema=response_schema,
+                video=video, audio=audio, image_inputs=image_inputs, response_schema=response_schema,
             )
 
         prompt_list = prompt if is_prompt_list else [prompt]
         video_list = video if is_video_list else [video]
+        audio_list = audio if is_audio_list else [audio]
         seed_list = extracted_seeds if is_seed_list else [seed]
         config_list = config if is_config_list else [config]
 
         batch_count = max(
             len(prompt_list) if is_prompt_list else 1,
             len(video_list) if is_video_list else 1,
+            len(audio_list) if is_audio_list else 1,
             len(seed_list) if is_seed_list else 1,
             len(config_list) if is_config_list else 1,
             max_image_list_len if is_image_list else 1,
@@ -1659,12 +1696,14 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
         has_distinct_item_inputs = (
             (is_prompt_list and len(prompt_list) > 1)
             or (is_video_list and len(video_list) > 1)
+            or (is_audio_list and len(audio_list) > 1)
             or (max_image_list_len > 1)
         )
 
-        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None):
+        def make_item_kwargs(idx, chained_prev_id="", prepared_imgs=None, precomp_vid=None, precomp_aud=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
+            a = audio_list[min(idx, len(audio_list) - 1)] if audio_list else None
             if isinstance(image_inputs, dict):
                 item_imgs = {}
                 for k, val in image_inputs.items():
@@ -1720,10 +1759,12 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                 "store": eff_store,
                 "previous_interaction_id": prev_id,
                 "video": v,
+                "audio": a,
                 "image_inputs": item_imgs,
                 "response_schema": resp_schema_val,
                 "prepared_images": prepared_imgs,
                 "precomputed_video": precomp_vid,
+                "precomputed_audio": precomp_aud,
                 "chained_previous_id": chained_prev_id,
                 "fingerprint_seed": fp_seed,
             }
@@ -1761,6 +1802,16 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
             except Exception:
                 precomputed_video = None
 
+        precomputed_audio = None
+        if len(audio_list) == 1 and audio_list[0] is not None and model_val not in cls.IMAGE_MODELS:
+            try:
+                a_items, _ = cls._serialize_audio(audio_list[0])
+                a_hashes = tuple(hashlib.sha256(b).hexdigest() for b, _ in a_items)
+                a_mimes = tuple(m for _, m in a_items)
+                precomputed_audio = (a_items, a_hashes, a_mimes)
+            except Exception:
+                precomputed_audio = None
+
         batch_results = []
         chained_interaction_id = ""
         for idx in range(batch_count):
@@ -1771,6 +1822,7 @@ class SSL_GeminiInteractionsTextPrompt(IO.ComfyNode):
                     chained_prev_id=chained_interaction_id,
                     prepared_imgs=prepared_images,
                     precomp_vid=precomputed_video,
+                    precomp_aud=precomputed_audio,
                 )
             )
             batch_results.append(item_res)

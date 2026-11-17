@@ -379,10 +379,13 @@ def _video_config(data, fps=1):
 def test_image_autogrow_is_last_input():
     schema = gemini_nodes.SSL_GeminiTextPrompt.define_schema()
 
-    assert schema.inputs[-3].id == "video"
+    assert schema.inputs[-4].id == "video"
+    assert schema.inputs[-3].id == "audio"
+    assert schema.inputs[-3].optional is True
     assert schema.inputs[-2].id == "response_schema"
     assert schema.inputs[-2].optional is True
     assert schema.inputs[-1].id == "image_inputs"
+    assert "audio" in gemini_nodes.SSL_GeminiTextPrompt.INPUT_TYPES()["optional"]
     assert "response_schema" in gemini_nodes.SSL_GeminiTextPrompt.INPUT_TYPES()["optional"]
     assert [output.id for output in schema.outputs] == ["text", "image", "final_actual_seed", "structured_output", "thoughts"]
 
@@ -1952,4 +1955,216 @@ def test_gemini_4_carbon_and_hydrogen_fingerprint_omits_sampling_params(model_id
         thinking_level="high" if model_id == "gemini-4-hydrogen" else "medium",
     )
     assert fp1 == fp2
+
+
+def _make_audio(duration_sec=0.1, sample_rate=16000, channels=2, batch=1, freq=440.0):
+    n = int(round(duration_sec * sample_rate))
+    t = torch.linspace(0.0, duration_sec, n, dtype=torch.float32)
+    base = torch.sin(2.0 * torch.pi * freq * t)
+    per_channel = torch.stack([base * (0.5 / (c + 1)) for c in range(channels)], dim=0)
+    waveform = torch.stack([per_channel + 0.05 * b for b in range(batch)], dim=0)
+    return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def test_audio_config_exposes_format_timestamp_and_autogrow():
+    schema = gemini_nodes.SSL_GeminiAudioConfig.define_schema()
+    assert [input_.id for input_ in schema.inputs] == ["format", "audio_timestamp", "audio_inputs"]
+    fmt_input = schema.inputs[0]
+    ts_input = schema.inputs[1]
+    autogrow = schema.inputs[2]
+    assert fmt_input.options == ["mp3", "flac", "wav"]
+    assert fmt_input.default == "mp3"
+    assert ts_input.default is False
+    assert autogrow.optional is True
+    assert autogrow.template.min == 1
+    assert autogrow.template.names[:3] == ["audio_1", "audio_2", "audio_3"]
+    assert autogrow.template.names[-1] == "audio_100"
+
+    clip = _make_audio()
+    output = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="flac",
+        audio_timestamp=True,
+        audio_inputs={"audio_1": clip},
+    )
+    assert output[0] == {
+        "format": "flac",
+        "audio_timestamp": True,
+        "audio_inputs": {"audio_1": clip},
+    }
+
+
+def test_audio_inputs_flatten_in_numeric_socket_and_batch_order():
+    clips, counts = gemini_nodes.SSL_GeminiTextPrompt._ordered_audio_clips(
+        {
+            "audio_10": _make_audio(batch=1, freq=880.0),
+            "audio_2": _make_audio(batch=2, freq=660.0),
+            "audio_1": _make_audio(batch=1, freq=440.0),
+        }
+    )
+
+    assert [(sock, idx) for sock, idx, _, _ in clips] == [
+        ("audio_1", 0),
+        ("audio_2", 0),
+        ("audio_2", 1),
+        ("audio_10", 0),
+    ]
+    assert counts == [("audio_1", 1), ("audio_2", 2), ("audio_10", 1)]
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "expected_mime", "sample_rate"),
+    [
+        ("mp3", "audio/mp3", 16000),
+        ("mp3", "audio/mp3", 20000),
+        ("flac", "audio/flac", 24000),
+        ("wav", "audio/wav", 16000),
+    ],
+)
+def test_serialize_audio_encodes_supported_formats(audio_format, expected_mime, sample_rate):
+    cfg = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format=audio_format,
+        audio_timestamp=True,
+        audio_inputs={"audio_1": _make_audio(sample_rate=sample_rate, batch=2)},
+    )[0]
+
+    items, audio_ts = gemini_nodes.SSL_GeminiTextPrompt._serialize_audio(cfg)
+
+    assert audio_ts is True
+    assert len(items) == 2
+    for audio_bytes, mime_type in items:
+        assert mime_type == expected_mime
+        assert len(audio_bytes) > 0
+
+
+def test_audio_at_inline_limit_returns_clear_error(monkeypatch):
+    monkeypatch.setattr(gemini_nodes.SSL_GeminiTextPrompt, "AUDIO_INLINE_LIMIT_BYTES", 4)
+    cfg = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_timestamp=False,
+        audio_inputs={"audio_1": _make_audio()},
+    )[0]
+
+    output = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config()),
+        audio=cfg,
+    )
+
+    assert output[0] == "Error processing input audio: Gemini audio input must be smaller than 100 MB after normalization."
+
+
+def test_audio_is_sent_after_video_with_timestamp_and_fingerprinted(structured_client):
+    structured_client.responses = [[("final", "ok-1")], [("final", "ok-2")]]
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+
+    audio_a = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_timestamp=True,
+        audio_inputs={"audio_1": _make_audio(freq=440.0), "audio_2": _make_audio(freq=550.0)},
+    )[0]
+    audio_b = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_timestamp=True,
+        audio_inputs={"audio_1": _make_audio(freq=660.0), "audio_2": _make_audio(freq=550.0)},
+    )[0]
+
+    kwargs = _execute_kwargs(_config())
+    kwargs.update(
+        model="gemini-3-flash-preview",
+        use_seed=True,
+        seed=7,
+        video=_video_config(b"vid-bytes", fps=2),
+        audio=audio_a,
+    )
+
+    first = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    second = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+    kwargs["audio"] = audio_b
+    third = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert first[0] == "ok-1"
+    assert second[0] == "ok-1"
+    assert third[0] == "ok-2"
+    assert len(structured_client.calls) == 2
+
+    sent = structured_client.calls[0]
+    parts = sent["contents"][0].parts
+    assert [p.inline_data.mime_type for p in parts[:-1]] == ["video/mp4", "audio/mp3", "audio/mp3"]
+    assert parts[-1].text == "test prompt"
+    assert sent["config"].audio_timestamp is True
+
+
+def test_audio_context_cache_key_and_vertex_blob_skip(monkeypatch):
+    build_key = gemini_nodes.SSL_GeminiTextPrompt._build_context_cache_key
+    k1 = build_key(("std", "k"), "m", "sys", "p", None, None, None, [], "unspecified", audio_hashes=("h1",), audio_mime_types=("audio/mp3",))
+    k2 = build_key(("std", "k"), "m", "sys", "p", None, None, None, [], "unspecified", audio_hashes=("h2",), audio_mime_types=("audio/mp3",))
+    k3 = build_key(("std", "k"), "m", "sys", "p", None, None, None, [], "unspecified", audio_hashes=("h1",), audio_mime_types=("audio/wav",))
+    assert k1 != k2 and k1 != k3
+
+    captured = {"cache_creates": 0, "generations": 0}
+
+    class FakeCaches:
+        @staticmethod
+        def create(**kwargs):
+            captured["cache_creates"] += 1
+            raise AssertionError("Vertex cache creation must be skipped")
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            captured["generations"] += 1
+            part = SimpleNamespace(text="ok", inline_data=None)
+            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.caches = FakeCaches()
+            self.models = FakeModels()
+
+    monkeypatch.setattr(gemini_nodes.genai, "Client", FakeClient)
+    monkeypatch.setattr(gemini_nodes.SSL_GeminiTextPrompt, "VERTEX_CACHE_INLINE_LIMIT_BYTES", 1)
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._client_cache.clear()
+    gemini_nodes.SSL_GeminiTextPrompt._context_cache.clear()
+
+    cfg = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_timestamp=False,
+        audio_inputs={"audio_1": _make_audio()},
+    )[0]
+    out = gemini_nodes.SSL_GeminiTextPrompt.execute(
+        **_execute_kwargs(_config(api_key="test-key", vertexai_express=True, use_cache=True, cache_seed=11)),
+        use_seed=True,
+        seed=2,
+        audio=cfg,
+    )
+
+    assert out[0] == "ok"
+    assert captured["cache_creates"] == 0
+    assert captured["generations"] == 1
+
+
+def test_audio_batch_precomputes_single_audio_config(monkeypatch, structured_client):
+    structured_client.responses = [[("final", "p1")], [("final", "p2")]]
+    gemini_nodes.SSL_GeminiTextPrompt._cache.clear()
+    serialize_calls = []
+    orig_serialize = gemini_nodes.SSL_GeminiTextPrompt._serialize_audio
+
+    def counting_serialize(audio_cfg):
+        serialize_calls.append(audio_cfg)
+        return orig_serialize(audio_cfg)
+
+    monkeypatch.setattr(gemini_nodes.SSL_GeminiTextPrompt, "_serialize_audio", counting_serialize)
+    cfg = gemini_nodes.SSL_GeminiAudioConfig.execute(
+        format="wav",
+        audio_timestamp=False,
+        audio_inputs={"audio_1": _make_audio()},
+    )[0]
+    kwargs = _execute_kwargs(_config())
+    kwargs["prompt"] = ["first", "second"]
+    kwargs["audio"] = cfg
+
+    out = gemini_nodes.SSL_GeminiTextPrompt.execute(**kwargs)
+
+    assert out[0] == ["p1", "p2"]
+    assert len(serialize_calls) == 1
 

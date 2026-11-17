@@ -4,6 +4,7 @@ from .gemini_nodes import (
 	SSL_GeminiAPIKeyConfig,
 	SSL_GeminiSafetyConfig,
 	SSL_GeminiVideoConfig,
+	SSL_GeminiAudioConfig,
 	SSL_GeminiTextPrompt,
 )
 from .interactions_nodes import (
@@ -27,6 +28,7 @@ class GeminiExtension(ComfyExtension):
 			SSL_GeminiAPIKeyConfig,
 			SSL_GeminiSafetyConfig,
 			SSL_GeminiVideoConfig,
+			SSL_GeminiAudioConfig,
 			SSL_GeminiResponseSchema,
 			SSL_GeminiTextPrompt,
 			SSL_GeminiInteractionsAPIKeyConfig,

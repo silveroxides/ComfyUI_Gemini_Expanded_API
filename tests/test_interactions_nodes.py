@@ -896,4 +896,89 @@ def test_interactions_gemini_4_rejects_invalid_thinking_levels(mock_interactions
     assert len(mock_interactions_client.calls) == 0
 
 
+def _make_audio(duration_sec=0.1, sample_rate=16000, channels=2, batch=1, freq=440.0):
+    n = int(round(duration_sec * sample_rate))
+    t = torch.linspace(0.0, duration_sec, n, dtype=torch.float32)
+    base = torch.sin(2.0 * torch.pi * freq * t)
+    per_channel = torch.stack([base * (0.5 / (c + 1)) for c in range(channels)], dim=0)
+    waveform = torch.stack([per_channel + 0.05 * b for b in range(batch)], dim=0)
+    return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def test_interactions_schema_places_audio_before_response_schema_and_image_autogrow_last():
+    schema = interactions_nodes.SSL_GeminiInteractionsTextPrompt.define_schema()
+    assert schema.inputs[-4].id == "video"
+    assert schema.inputs[-3].id == "audio"
+    assert schema.inputs[-3].optional is True
+    assert schema.inputs[-2].id == "response_schema"
+    assert schema.inputs[-1].id == "image_inputs"
+
+
+def test_interactions_multimodal_audio_ordering_and_validation(mock_interactions_client):
+    mock_interactions_client.responses = [{"text": "Heard audio", "id": "int_aud_1"}]
+    audio_cfg = interactions_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_timestamp=True,
+        audio_inputs={"audio_1": _make_audio(batch=2)},
+    )[0]
+    fake_img = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+
+    output = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(
+        **_execute_kwargs(
+            image_inputs={"image_1": fake_img},
+            video={"video": FakeVideo(b"fake video"), "fps": 1},
+            audio=audio_cfg,
+            prompt="Describe all media",
+        )
+    )
+
+    assert output[0] == "Heard audio"
+    items = mock_interactions_client.calls[0]["input"]
+    assert [item["type"] for item in items] == ["image", "video", "audio", "audio", "text"]
+    assert items[2]["mime_type"] == "audio/mp3"
+    assert items[3]["mime_type"] == "audio/mp3"
+
+    from google.genai._gaos.types.interactions.audiocontent import AudioContent
+    validated_audio = AudioContent(**items[2])
+    assert base64.b64decode(validated_audio.data) == items[2]["data"].getvalue()
+
+
+def test_interactions_audio_fingerprint_and_image_model_forwarding(mock_interactions_client, monkeypatch):
+    mock_interactions_client.responses = [
+        {"text": "resp-a", "id": "int_a"},
+        {"text": "resp-b", "id": "int_b"},
+    ]
+    audio_a = interactions_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_inputs={"audio_1": _make_audio(freq=440.0)},
+    )[0]
+    audio_b = interactions_nodes.SSL_GeminiAudioConfig.execute(
+        format="mp3",
+        audio_inputs={"audio_1": _make_audio(freq=880.0)},
+    )[0]
+
+    args = _execute_kwargs(use_seed=True, seed=5, audio=audio_a)
+    first = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+    second = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+    args["audio"] = audio_b
+    third = interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(**args)
+
+    assert first[0] == second[0] == "resp-a"
+    assert third[0] == "resp-b"
+    assert len(mock_interactions_client.calls) == 2
+
+    forwarded = []
+
+    def fake_generate(**kwargs):
+        forwarded.append(kwargs)
+        return interactions_nodes.IO.NodeOutput("img", torch.zeros((1, 8, 8, 3)), 0, "", "")
+
+    monkeypatch.setattr(interactions_nodes.SSL_GeminiTextPrompt, "execute", fake_generate)
+    interactions_nodes.SSL_GeminiInteractionsTextPrompt.execute(
+        **_execute_kwargs(model="gemini-3.1-flash-image", include_images=True, audio=audio_a)
+    )
+    assert forwarded[0]["audio"] == audio_a
+
+
+
 

@@ -4,6 +4,7 @@ import uuid
 import re
 import torch
 import numpy as np
+import av
 import cv2
 from PIL import Image
 from io import BytesIO
@@ -236,10 +237,65 @@ class SSL_GeminiVideoConfig(IO.ComfyNode):
         })
 
 
+class SSL_GeminiAudioConfig(IO.ComfyNode):
+    GeminiAudioConfig = IO.Custom("GEMINI_AUDIO_CONFIG")
+
+    @classmethod
+    def define_schema(cls) -> IO.Schema:
+        audio_names = [f"audio_{index}" for index in range(1, 101)]
+        audio_template = IO.Autogrow.TemplateNames(
+            IO.Audio.Input("audio_1", optional=True),
+            names=audio_names,
+            min=1,
+        )
+        return IO.Schema(
+            node_id="SSL_GeminiAudioConfig",
+            display_name="Configure Gemini Audio Input",
+            category="API/Gemini",
+            inputs=[
+                IO.Combo.Input(
+                    "format",
+                    options=["mp3", "flac", "wav"],
+                    default="mp3",
+                    tooltip="Audio container format sent inline to Gemini.",
+                ),
+                IO.Boolean.Input(
+                    "audio_timestamp",
+                    default=False,
+                    tooltip="Include audio_timestamp on GenerateContent requests (ignored by Interactions API).",
+                ),
+                IO.Autogrow.Input(
+                    "audio_inputs",
+                    template=audio_template,
+                    optional=True,
+                    tooltip=(
+                        "Ordered Gemini audio parts growing from audio_1 through audio_100. Batched audio items "
+                        "are sent consecutively before the next socket."
+                    ),
+                ),
+            ],
+            outputs=[cls.GeminiAudioConfig.Output("audio_config")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        format: str = "mp3",
+        audio_timestamp: bool = False,
+        audio_inputs: IO.Autogrow.Type | None = None,
+    ) -> IO.NodeOutput:
+        return IO.NodeOutput({
+            "format": str(format or "mp3").lower(),
+            "audio_timestamp": bool(audio_timestamp),
+            "audio_inputs": audio_inputs if audio_inputs is not None else {},
+        })
+
+
 class SSL_GeminiTextPrompt(IO.ComfyNode):
     GemConfig = IO.Custom("GEMINI_CONFIG")
     ResponseSchema = IO.Custom("GEMINI_RESPONSE_SCHEMA")
     GeminiVideoConfig = IO.Custom("GEMINI_VIDEO_CONFIG")
+    GeminiAudioConfig = IO.Custom("GEMINI_AUDIO_CONFIG")
     _cache: dict = {}
     _seed_map_cache: dict = {}  # Maps (input_seed, fingerprint) -> successful_gemini_seed
     _client_cache: dict = {}  # Maps client_key tuple -> genai.Client instance
@@ -261,6 +317,18 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
     )
     VIDEO_MIME_TYPE = "video/mp4"
     VIDEO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
+    AUDIO_MIME_TYPES = {
+        "mp3": "audio/mp3",
+        "flac": "audio/flac",
+        "wav": "audio/wav",
+    }
+    AUDIO_CODECS = {
+        "mp3": "libmp3lame",
+        "flac": "flac",
+        "wav": "pcm_s16le",
+    }
+    _MP3_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
+    AUDIO_INLINE_LIMIT_BYTES = 100 * 1024 * 1024
     VERTEX_CACHE_INLINE_LIMIT_BYTES = 10 * 1024 * 1024
 
     # Placeholder only. Keep this out of the model combo until Google's hosted-model
@@ -333,6 +401,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 IO.String.Input("timeout_fallback_text", default="", optional=True, multiline=True, tooltip="Text returned when the Gemini request times out. Leave empty to return the standard timeout message."),
                 IO.Combo.Input("image_size", options=["None", "512", "1K", "2K", "4K"], default="None", optional=True, tooltip="Generated image resolution. Gemini 3.1 Flash Lite Image supports only 1K; 512 is supported only by Gemini 3.1 Flash Image."),
                 cls.GeminiVideoConfig.Input("video", optional=True, tooltip="Optional configured Gemini video input with embedded audio and sampling FPS."),
+                cls.GeminiAudioConfig.Input("audio", optional=True, tooltip="Optional configured Gemini audio inputs."),
                 cls.ResponseSchema.Input("response_schema", display_name="Response format", optional=True,
                                          tooltip="Connect an answer format to request the fields you defined. Leave disconnected for a normal answer."),
                 IO.Autogrow.Input(
@@ -556,6 +625,124 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         return video_bytes, cls.VIDEO_MIME_TYPE
 
     @classmethod
+    def _ordered_audio_clips(cls, audio_inputs: IO.Autogrow.Type | None):
+        if not audio_inputs:
+            return [], []
+        if not isinstance(audio_inputs, dict):
+            raise ValueError("Gemini audio_inputs must be a dictionary of audio sockets.")
+
+        def audio_index(name):
+            match = re.fullmatch(r"audio_(\d+)", str(name))
+            return int(match.group(1)) if match else 101
+
+        clips = []
+        batch_counts = []
+        for socket_name, raw_audio in sorted(
+            audio_inputs.items(), key=lambda item: (audio_index(item[0]), str(item[0]))
+        ):
+            if raw_audio is None:
+                continue
+            entries = raw_audio if isinstance(raw_audio, list) else [raw_audio]
+            socket_clips = 0
+            for entry in entries:
+                if entry is None:
+                    continue
+                if not isinstance(entry, dict) or "waveform" not in entry:
+                    raise ValueError(f"Gemini {socket_name} must be an AUDIO dictionary containing 'waveform' and 'sample_rate'.")
+                waveform = entry["waveform"]
+                sample_rate_val = entry.get("sample_rate", entry.get("sampler_rate"))
+                if sample_rate_val is None or int(sample_rate_val) <= 0:
+                    raise ValueError(f"Gemini {socket_name} must provide a positive integer sample_rate.")
+                sample_rate = int(sample_rate_val)
+                if not torch.is_tensor(waveform) or waveform.ndim not in (2, 3):
+                    raise ValueError(f"Gemini {socket_name} waveform must be a 2D [C, N] or 3D [B, C, N] tensor.")
+                if waveform.shape[-1] == 0 or waveform.shape[-2] == 0:
+                    raise ValueError(f"Gemini {socket_name} waveform cannot be empty.")
+                if waveform.ndim == 3:
+                    for batch_idx in range(int(waveform.shape[0])):
+                        clips.append((socket_name, socket_clips, waveform[batch_idx], sample_rate))
+                        socket_clips += 1
+                else:
+                    clips.append((socket_name, socket_clips, waveform, sample_rate))
+                    socket_clips += 1
+            if socket_clips > 0:
+                batch_counts.append((socket_name, socket_clips))
+        return clips, batch_counts
+
+    @classmethod
+    def _encode_audio_clip(cls, waveform: torch.Tensor, sample_rate: int, audio_format: str) -> tuple[bytes, str]:
+        fmt = str(audio_format or "mp3").lower()
+        if fmt not in cls.AUDIO_MIME_TYPES:
+            raise ValueError(f"Unsupported Gemini audio format: {audio_format!r}.")
+
+        wave = waveform.detach().cpu().to(torch.float32)
+        if wave.ndim != 2 or wave.shape[0] < 1 or wave.shape[1] < 1:
+            raise ValueError("Gemini audio clip waveform must have shape [channels, samples].")
+        if wave.shape[0] == 1:
+            layout = "mono"
+        elif wave.shape[0] == 2:
+            layout = "stereo"
+        else:
+            wave = wave.mean(dim=0, keepdim=True)
+            layout = "mono"
+
+        target_rate = int(sample_rate)
+        resampler = None
+        if fmt == "mp3" and target_rate not in cls._MP3_SAMPLE_RATES:
+            target_rate = next((r for r in cls._MP3_SAMPLE_RATES if r >= target_rate), 48000)
+            resampler = av.AudioResampler(format="flt", layout=layout, rate=target_rate)
+
+        buffer = BytesIO()
+        container = av.open(buffer, mode="w", format=fmt)
+        try:
+            out_stream = container.add_stream(cls.AUDIO_CODECS[fmt], rate=target_rate, layout=layout)
+            interleaved = np.ascontiguousarray(wave.movedim(0, 1).reshape(1, -1).numpy())
+            frame = av.AudioFrame.from_ndarray(interleaved, format="flt", layout=layout)
+            frame.sample_rate = int(sample_rate)
+            frame.pts = 0
+            frames_to_encode = resampler.resample(frame) if resampler is not None else [frame]
+            for enc_frame in frames_to_encode:
+                for packet in out_stream.encode(enc_frame):
+                    container.mux(packet)
+            if resampler is not None:
+                for enc_frame in resampler.resample(None):
+                    for packet in out_stream.encode(enc_frame):
+                        container.mux(packet)
+            for packet in out_stream.encode(None):
+                container.mux(packet)
+        finally:
+            container.close()
+
+        return buffer.getvalue(), cls.AUDIO_MIME_TYPES[fmt]
+
+    @classmethod
+    def _serialize_audio(cls, audio_config: dict[str, Any] | None) -> tuple[list[tuple[bytes, str]], bool]:
+        if audio_config is None:
+            return [], False
+        if not isinstance(audio_config, dict):
+            raise ValueError("Gemini audio config must be a dictionary from Configure Gemini Audio Input.")
+
+        audio_format = str(audio_config.get("format", "mp3") or "mp3").lower()
+        audio_timestamp = bool(audio_config.get("audio_timestamp", False))
+        audio_inputs = audio_config.get("audio_inputs")
+        clips, batch_counts = cls._ordered_audio_clips(audio_inputs)
+        if not clips:
+            return [], False
+
+        serialized = []
+        total_bytes = 0
+        for _, _, waveform, sample_rate in clips:
+            audio_bytes, mime_type = cls._encode_audio_clip(waveform, sample_rate, audio_format)
+            total_bytes += len(audio_bytes)
+            if total_bytes >= cls.AUDIO_INLINE_LIMIT_BYTES:
+                raise ValueError("Gemini audio input must be smaller than 100 MB after normalization.")
+            serialized.append((audio_bytes, mime_type))
+
+        batch_summary = ", ".join(f"{name}={count}" for name, count in batch_counts)
+        print(f"[INFO] Prepared Gemini audio inputs ({audio_format}): {batch_summary}, total={len(serialized)}")
+        return serialized, audio_timestamp
+
+    @classmethod
     def _resolve_gemini_3_7_thinking_level(cls, thinking_level, model_name=None):
         if thinking_level is None or thinking_level == "None":
             if model_name in (
@@ -656,7 +843,8 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                                              include_thoughts=False, thinking_level=None, media_resolution=None,
                                              retry_pattern="", max_retries=3, use_cache=False,
                                              cache_ttl_minutes=60, cache_seed=0, image_size="None", schema_identity=None,
-                                             precomputed_image_hashes=None):
+                                             precomputed_image_hashes=None,
+                                             audio_hashes=(), audio_mime_types=(), audio_timestamp=False):
 
         # 1. Hashing Images
         def get_tensor_hash(tensor):
@@ -742,6 +930,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             video_hash,
             video_mime_type,
             video_fps,
+            tuple(audio_hashes),
+            tuple(audio_mime_types),
+            bool(audio_timestamp),
             image_hashes,
             bool(use_proxy),
             str(proxy_host),
@@ -827,8 +1018,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
     @staticmethod
     def _build_context_cache_key(client_key, model, system_instruction, prompt,
-                                 video_hash, video_mime_type, video_fps, image_hashes, media_resolution):
-        return (
+                                 video_hash, video_mime_type, video_fps, image_hashes, media_resolution,
+                                 audio_hashes=(), audio_mime_types=()):
+        key = (
             client_key,
             model,
             system_instruction,
@@ -839,6 +1031,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             tuple(image_hashes),
             str(media_resolution),
         )
+        if audio_hashes or audio_mime_types:
+            return (*key, tuple(audio_hashes), tuple(audio_mime_types))
+        return key
 
     @staticmethod
     def _context_cache_expiry(cache, fallback_ttl_minutes):
@@ -1043,10 +1238,12 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         retry_pattern="", max_retries=3, timeout_fallback_text="",
                         image_size="None",
                         video: GeminiVideoConfig.Type | None = None,
+                        audio: GeminiAudioConfig.Type | None = None,
                         image_inputs: IO.Autogrow.Type | None = None,
                         response_schema: ResponseSchema.Type | None = None,
                         prepared_images: dict[str, Any] | None = None,
                         precomputed_video: Tuple[bytes | None, str | None, str | None, int | None] | None = None,
+                        precomputed_audio: Tuple[list[tuple[bytes, str]], tuple[str, ...], tuple[str, ...], bool] | None = None,
                         fingerprint_seed: int | None = None) -> IO.NodeOutput:
 
         cls._check_interrupt()
@@ -1083,6 +1280,18 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
                 return IO.NodeOutput(f"Error processing input video: {e}", cls.generate_empty_image(), output_seed, "", "")
             video_hash = hashlib.sha256(video_bytes).hexdigest() if video_bytes is not None else None
+        if precomputed_audio is not None:
+            audio_items, audio_hashes, audio_mime_types, raw_audio_timestamp = precomputed_audio
+        else:
+            try:
+                audio_items, raw_audio_timestamp = cls._serialize_audio(audio)
+            except Exception as e:
+                print(f"[ERROR] Error processing input audio: {e}")
+                output_seed = cache_seed if use_cache and use_seed else seed if use_seed else 0
+                return IO.NodeOutput(f"Error processing input audio: {e}", cls.generate_empty_image(), output_seed, "", "")
+            audio_hashes = tuple(hashlib.sha256(b).hexdigest() for b, _ in audio_items)
+            audio_mime_types = tuple(m for _, m in audio_items)
+        eff_audio_timestamp = bool(raw_audio_timestamp and audio_items and not (include_images and model in cls.IMAGE_MODELS))
         precomputed_image_hashes = prepared_images["image_hashes"] if prepared_images is not None else None
         fingerprint, cached = cls._compute_fingerprint_and_check_cache(
             config, prompt, system_instruction, model, temperature, top_p, top_k, max_output_tokens,
@@ -1095,6 +1304,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             image_size=image_size,
             schema_identity=schema_identity,
             precomputed_image_hashes=precomputed_image_hashes,
+            audio_hashes=audio_hashes,
+            audio_mime_types=audio_mime_types,
+            audio_timestamp=eff_audio_timestamp,
         )
 
         if cached is not None:
@@ -1257,11 +1469,12 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 print(f"[ERROR] Gemini client initialization failed: {str(e)}")
                 return IO.NodeOutput(f"Gemini client initialization failed: {str(e)}", cls.generate_empty_image(), actual_seed if actual_seed is not None else 0, "", "")
 
-            # Prepare contents (images + video + prompt)
+            # Prepare contents (images + video + audio + prompt)
             context_image_hashes = []
             media_parts = []
             context_inline_bytes = (
                 (len(video_bytes) if video_bytes is not None else 0)
+                + sum(len(b) for b, _ in audio_items)
                 + len(padded_prompt.encode("utf-8"))
                 + len(padded_system_instruction.encode("utf-8"))
             )
@@ -1332,6 +1545,10 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                     video_part = types.Part.from_bytes(data=video_bytes, mime_type=video_mime_type)
                 video_part.video_metadata = types.VideoMetadata(fps=video_fps)
                 media_parts.append(video_part)
+            for audio_bytes, audio_mime_type in audio_items:
+                media_parts.append(
+                    types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime_type)
+                )
             if media_parts:
                 contents = [
                     types.UserContent(
@@ -1354,12 +1571,14 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 video_fps,
                 context_image_hashes,
                 media_resolution,
+                audio_hashes=audio_hashes,
+                audio_mime_types=audio_mime_types,
             )
 
             skip_context_cache = (
                 (
                     use_cache
-                    and video_bytes is not None
+                    and (video_bytes is not None or bool(audio_items))
                     and (config.get("use_vertexai_env", False) or config.get("vertexai_express", False))
                     and context_inline_bytes > cls.VERTEX_CACHE_INLINE_LIMIT_BYTES
                 )
@@ -1401,6 +1620,9 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             if schema_snapshot is not None:
                 generate_content_config.response_mime_type = "application/json"
                 generate_content_config.response_json_schema = schema_snapshot
+
+            if eff_audio_timestamp:
+                generate_content_config.audio_timestamp = True
 
             if use_seed and actual_seed is not None:
                 try:
@@ -1668,6 +1890,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 retry_pattern="", max_retries=3, timeout_fallback_text="",
                 image_size="None",
                 video: GeminiVideoConfig.Type | None = None,
+                audio: GeminiAudioConfig.Type | None = None,
                 image_inputs: IO.Autogrow.Type | None = None,
                 response_schema: ResponseSchema.Type | None = None) -> IO.NodeOutput:
 
@@ -1693,6 +1916,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
 
         is_prompt_list = _is_list_arg(prompt)
         is_video_list = _is_list_arg(video)
+        is_audio_list = _is_list_arg(audio)
         extracted_seeds = _extract_seed_list(seed)
         is_seed_list = extracted_seeds is not None
         is_config_list = _is_list_arg(config)
@@ -1703,7 +1927,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         )
         is_image_list = max_image_list_len > 0
 
-        is_batch = is_prompt_list or is_video_list or is_seed_list or is_config_list or is_image_list
+        is_batch = is_prompt_list or is_video_list or is_audio_list or is_seed_list or is_config_list or is_image_list
 
         if not is_batch:
             return cls._execute_single(
@@ -1715,17 +1939,19 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 include_thoughts=include_thoughts, thinking_level=thinking_level,
                 media_resolution=media_resolution, retry_pattern=retry_pattern, max_retries=max_retries,
                 timeout_fallback_text=timeout_fallback_text, image_size=image_size,
-                video=video, image_inputs=image_inputs, response_schema=response_schema,
+                video=video, audio=audio, image_inputs=image_inputs, response_schema=response_schema,
             )
 
         prompt_list = prompt if is_prompt_list else [prompt]
         video_list = video if is_video_list else [video]
+        audio_list = audio if is_audio_list else [audio]
         seed_list = extracted_seeds if is_seed_list else [seed]
         config_list = config if is_config_list else [config]
 
         batch_count = max(
             len(prompt_list) if is_prompt_list else 1,
             len(video_list) if is_video_list else 1,
+            len(audio_list) if is_audio_list else 1,
             len(seed_list) if is_seed_list else 1,
             len(config_list) if is_config_list else 1,
             max_image_list_len if is_image_list else 1,
@@ -1770,12 +1996,14 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
         has_distinct_item_inputs = (
             (is_prompt_list and len(prompt_list) > 1)
             or (is_video_list and len(video_list) > 1)
+            or (is_audio_list and len(audio_list) > 1)
             or (max_image_list_len > 1)
         )
 
-        def make_item_kwargs(idx, prepared_imgs=None, precomp_vid=None):
+        def make_item_kwargs(idx, prepared_imgs=None, precomp_vid=None, precomp_aud=None):
             p = prompt_list[min(idx, len(prompt_list) - 1)] if prompt_list else ""
             v = video_list[min(idx, len(video_list) - 1)] if video_list else None
+            a = audio_list[min(idx, len(audio_list) - 1)] if audio_list else None
             if isinstance(image_inputs, dict):
                 item_imgs = {}
                 for k, val in image_inputs.items():
@@ -1821,10 +2049,12 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                 "timeout_fallback_text": timeout_fb_val,
                 "image_size": img_size_val,
                 "video": v,
+                "audio": a,
                 "image_inputs": item_imgs,
                 "response_schema": resp_schema_val,
                 "prepared_images": prepared_imgs,
                 "precomputed_video": precomp_vid,
+                "precomputed_audio": precomp_aud,
                 "fingerprint_seed": fp_seed,
             }
 
@@ -1860,6 +2090,16 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
             except Exception:
                 precomputed_video = None
 
+        precomputed_audio = None
+        if len(audio_list) == 1 and audio_list[0] is not None:
+            try:
+                a_items, a_ts = cls._serialize_audio(audio_list[0])
+                a_hashes = tuple(hashlib.sha256(b).hexdigest() for b, _ in a_items)
+                a_mimes = tuple(m for _, m in a_items)
+                precomputed_audio = (a_items, a_hashes, a_mimes, a_ts)
+            except Exception:
+                precomputed_audio = None
+
         batch_results = []
         for idx in range(batch_count):
             cls._check_interrupt()
@@ -1869,6 +2109,7 @@ class SSL_GeminiTextPrompt(IO.ComfyNode):
                         idx,
                         prepared_imgs=prepared_images,
                         precomp_vid=precomputed_video,
+                        precomp_aud=precomputed_audio,
                     )
                 )
             )
